@@ -13,11 +13,13 @@ export type Database = {
           customer_name: string;
           customer_email: string;
           assignee_id: string | null;
+          organization_id: string | null;
           department: string | null;
           has_media: boolean;
           created_at: string;
           updated_at: string;
           resolved_at: string | null;
+          due_date: string | null;
         };
         Insert: {
           id?: string;
@@ -30,11 +32,13 @@ export type Database = {
           customer_name: string;
           customer_email: string;
           assignee_id?: string | null;
+          organization_id?: string | null;
           department?: string | null;
           has_media?: boolean;
           created_at?: string;
           updated_at?: string;
           resolved_at?: string | null;
+          due_date?: string | null;
         };
         Update: {
           id?: string;
@@ -47,11 +51,48 @@ export type Database = {
           customer_name?: string;
           customer_email?: string;
           assignee_id?: string | null;
+          organization_id?: string | null;
           department?: string | null;
           has_media?: boolean;
           created_at?: string;
           updated_at?: string;
           resolved_at?: string | null;
+          due_date?: string | null;
+        };
+      };
+      organizations: {
+        Row: {
+          id: string;
+          name: string;
+          website: string | null;
+          industry: string | null;
+          description: string | null;
+          status: string;
+          type: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          website?: string | null;
+          industry?: string | null;
+          description?: string | null;
+          status?: string;
+          type?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          website?: string | null;
+          industry?: string | null;
+          description?: string | null;
+          status?: string;
+          type?: string;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       messages: {
@@ -136,3 +177,7 @@ export type MessageUpdate = Database['public']['Tables']['messages']['Update'];
 export type Profile = Database['public']['Tables']['profiles']['Row'];
 export type ProfileInsert = Database['public']['Tables']['profiles']['Insert'];
 export type ProfileUpdate = Database['public']['Tables']['profiles']['Update'];
+
+export type Organization = Database['public']['Tables']['organizations']['Row'];
+export type OrganizationInsert = Database['public']['Tables']['organizations']['Insert'];
+export type OrganizationUpdate = Database['public']['Tables']['organizations']['Update'];

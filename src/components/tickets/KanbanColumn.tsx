@@ -4,16 +4,17 @@ import { useState } from 'react';
 import { TicketCard } from './TicketCard';
 import { PlusCircleIcon } from '@/components/ui/icons';
 import { Ticket } from '@/types/ticket';
+import { useDroppable } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 
 type KanbanColumnProps = {
   id: string;
   title: string;
   tickets: Ticket[];
   loading: boolean;
-  onTicketDrop: (ticketId: string, newStatus: string, sourceStatus: string) => Promise<void>;
 };
 
-export function KanbanColumn({ id, title, tickets, loading, onTicketDrop }: KanbanColumnProps) {
+export function KanbanColumn({ id, title, tickets, loading }: KanbanColumnProps) {
   // Generate loading placeholders if in loading state
   if (loading) {
     return (
@@ -42,8 +43,16 @@ export function KanbanColumn({ id, title, tickets, loading, onTicketDrop }: Kanb
     );
   }
 
+  // Set up droppable area with dnd-kit
+  const { setNodeRef, isOver } = useDroppable({
+    id: id, // Use the column id as the droppable id
+  });
+
+  // Get ticket ids for this column for SortableContext
+  const ticketIds = tickets.map(ticket => ticket.id);
+
   return (
-    <div className="bg-card rounded-lg p-4 space-y-4 border border-border flex flex-col h-[calc(100vh-220px)]">
+    <div className="bg-card rounded-lg p-4 space-y-4 border border-border flex flex-col h-[calc(100vh-220px)] relative">
       <div className="flex justify-between items-center mb-1">
         <h3 className="font-medium flex items-center">
           {title} <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs">{tickets.length}</span>
@@ -61,31 +70,15 @@ export function KanbanColumn({ id, title, tickets, loading, onTicketDrop }: Kanb
       </div>
       
       <div 
-        className="flex-1 space-y-3 overflow-y-auto"
-        onDragOver={(e) => {
-          e.preventDefault();
-          e.currentTarget.classList.add('bg-accent/50');
-        }}
-        onDragLeave={(e) => {
-          e.currentTarget.classList.remove('bg-accent/50');
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          e.currentTarget.classList.remove('bg-accent/50');
-          const ticketId = e.dataTransfer.getData('ticketId');
-          const sourceStatus = e.dataTransfer.getData('sourceStatus');
-          
-          if (ticketId && sourceStatus && sourceStatus !== id) {
-            onTicketDrop(ticketId, id, sourceStatus);
-          }
-        }}
+        ref={setNodeRef}
+        className={`flex-1 space-y-3 overflow-y-auto transition-colors duration-200 ${isOver ? 'ring-2 ring-primary/30 bg-accent/30' : ''}`}
       >
-        {tickets.map((ticket) => (
-          <TicketCard 
-            key={ticket.id} 
-            ticket={ticket} 
-          />
-        ))}
+        {/* Pass the correct context for sorting tickets within this column */}
+        <SortableContext items={ticketIds} strategy={verticalListSortingStrategy}>
+          {tickets.map((ticket) => (
+            <TicketCard key={ticket.id} ticket={ticket} />
+          ))}
+        </SortableContext>
 
         {/* Empty state when there are no tickets */}
         {tickets.length === 0 && (
@@ -96,6 +89,11 @@ export function KanbanColumn({ id, title, tickets, loading, onTicketDrop }: Kanb
           </div>
         )}
       </div>
+
+      {/* Insertion indicator line that appears when dragging - controlled by dnd-kit */}
+      {isOver && tickets.length === 0 && (
+        <div className="absolute inset-x-4 top-20 border-t-2 border-primary pointer-events-none" />
+      )}
     </div>
   );
 }

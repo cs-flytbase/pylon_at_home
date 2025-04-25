@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { Clock, User, Paperclip, GripVertical, MessageSquare, MoreVertical, CheckCircle, UserPlus, AlertTriangle, Tag, Trash2 } from 'lucide-react';
 import { Ticket } from '@/types/ticket';
@@ -60,6 +60,7 @@ function formatTimeAgo(dateString: string): string {
 
 export function TicketCard({ ticket }: TicketCardProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const cardRef = React.useRef<HTMLDivElement>(null);
   
   // Helper functions for badge colors
   const getPriorityClass = (priority: string) => {
@@ -85,16 +86,35 @@ export function TicketCard({ ticket }: TicketCardProps) {
     <Card
       draggable
       data-component="ticket-card"
+      ref={cardRef}
       onDragStart={(e) => {
         e.dataTransfer.setData('ticketId', ticket.id);
         e.dataTransfer.setData('sourceStatus', ticket.status);
         e.dataTransfer.effectAllowed = 'move';
         setIsDragging(true);
+        // Custom drag image: clone the card and use it as the drag image
+        if (cardRef.current) {
+          const node = cardRef.current;
+          const clone = node.cloneNode(true) as HTMLElement;
+          clone.style.position = 'absolute';
+          clone.style.top = '-9999px';
+          clone.style.left = '-9999px';
+          clone.style.boxShadow = '0 8px 24px 0 rgba(0,0,0,0.18)';
+          clone.style.opacity = '1';
+          clone.style.background = 'white';
+          clone.style.pointerEvents = 'none';
+          clone.style.transform = 'scale(1.03)';
+          document.body.appendChild(clone);
+          e.dataTransfer.setDragImage(clone, node.offsetWidth / 2, node.offsetHeight / 2);
+          setTimeout(() => document.body.removeChild(clone), 0);
+        }
       }}
       onDragEnd={() => {
         setIsDragging(false);
       }}
-      className={`shadow-sm hover:shadow transition-all cursor-grab ${isDragging ? 'shadow-md border-primary/50 ring-1 ring-primary/20 opacity-50' : ''}`}
+      className={`shadow-sm hover:shadow transition-all cursor-grab focus:outline-none focus:ring-2 focus:ring-primary/40 ${isDragging ? 'z-50 scale-105 shadow-2xl border-primary/70 ring-2 ring-primary/30 opacity-90' : ''}`}
+      tabIndex={0}
+      aria-grabbed={isDragging}
     >
       <CardHeader className="p-4 pb-2">
         <div className="flex items-center justify-between">

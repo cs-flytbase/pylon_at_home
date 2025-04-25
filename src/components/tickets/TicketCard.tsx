@@ -4,11 +4,12 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ClockIcon, UserIcon, MessageIcon, TagIcon, PaperclipIcon, GripIcon } from '@/components/ui/icons';
 import { Ticket } from '@/types/ticket';
-
-
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 type TicketCardProps = {
   ticket: Ticket;
+  isDragging?: boolean;
 };
 
 // Helper function to format date
@@ -44,8 +45,24 @@ function formatTimeAgo(dateString: string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-export function TicketCard({ ticket }: TicketCardProps) {
-  const [isDragging, setIsDragging] = useState(false);
+export function TicketCard({ ticket, isDragging = false }: TicketCardProps) {
+  // Set up sortable with dnd-kit
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging: isSortableDragging,
+  } = useSortable({
+    id: ticket.id,
+    data: {
+      ticket,
+    },
+  });
+  
+  // Combine props isDragging with the one from dnd-kit
+  const isCurrentlyDragging = isDragging || isSortableDragging;
   // Priority colors
   const priorityColors: Record<string, string> = {
     'low': 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
@@ -61,19 +78,21 @@ export function TicketCard({ ticket }: TicketCardProps) {
     'feature': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   };
 
+  // Get the transform styles from dnd-kit for smooth animations
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
   return (
     <div
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData('ticketId', ticket.id);
-        e.dataTransfer.setData('sourceStatus', ticket.status);
-        e.dataTransfer.effectAllowed = 'move';
-        setIsDragging(true);
-      }}
-      onDragEnd={() => {
-        setIsDragging(false);
-      }}
-      className={`bg-background rounded-md p-4 border border-border shadow-sm hover:shadow transition-all ${isDragging ? 'shadow-md border-primary/50 ring-1 ring-primary/20 opacity-50' : ''}`}
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`bg-background rounded-md p-4 border border-border shadow-sm hover:shadow transition-all ${
+        isCurrentlyDragging ? 'shadow-md border-primary/50 ring-1 ring-primary/20 opacity-50' : ''
+      }`}
     >
       <div className="flex items-center justify-between mb-2">
         <div className="flex-1">

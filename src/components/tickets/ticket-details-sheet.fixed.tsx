@@ -1,22 +1,42 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import { 
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Ticket } from '@/types/ticket';
-import { X, User, Clock, MessageSquare, Paperclip, Send } from 'lucide-react';
+import { Profile, Organization } from '@/types/database';
+import { X, User, Clock, MessageSquare, Paperclip, Send, Check, Plus, Building2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { formatTimeAgo } from '@/lib/utils';
 import React from 'react';
 import { supabase } from '@/lib/supabase';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 type Message = {
   id: string;
   content: string;
   sender_name: string;
-  sender_avatar?: string;
+  sender_avatar?: string | null;
   is_customer: boolean;
   created_at: string;
   has_attachments: boolean;
@@ -28,6 +48,8 @@ type TicketDetailsSheetProps = {
   onOpenChange: (open: boolean) => void;
 };
 
+// No need to redefine Organization as we're importing it from database.ts
+
 export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetailsSheetProps): React.ReactNode {
   const router = useRouter();
   const [ticket, setTicket] = useState<Ticket | null>(null);
@@ -35,45 +57,171 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   const [loading, setLoading] = useState(true);
   const [newMessage, setNewMessage] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
+  const [assignees, setAssignees] = useState<Profile[]>([]);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isUpdatingAssignee, setIsUpdatingAssignee] = useState(false);
+  const [isUpdatingOrganization, setIsUpdatingOrganization] = useState(false);
+  const [newOrgName, setNewOrgName] = useState('');
+  const [newOrgWebsite, setNewOrgWebsite] = useState('');
+  const [newOrgIndustry, setNewOrgIndustry] = useState('');
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  const realtimeChannelRef = useRef<RealtimeChannel | null>(null);
   
   // If the component is being used inside the ticket-detail-overlay, we want to
   // render the content directly without the Sheet wrapper
   const isStandaloneView = typeof document !== 'undefined' ? 
     !!document.querySelector('.ticket-detail-overlay') : false;
 
-  // Fetch ticket details and messages from Supabase
+  // Fetch all assignees (profiles) and organizations
   useEffect(() => {
-    if (open && ticketId) {
-      setLoading(true);
+    const fetchData = async () => {
+      try {
+        // Fetch assignees
+        const { data: assigneeData, error: assigneeError } = await supabase
+          .from('profiles')
+          .select('*')
+          .order('full_name', { ascending: true });
 
-      const fetchTicketData = async () => {
+        if (assigneeError) {
+          console.error('Failed to fetch assignees:', assigneeError);
+        } else {
+          setAssignees(assigneeData || []);
+        }
+        
+        // Fetch organizations - using direct API call since Supabase types may not be updated
         try {
-          // Fetch ticket details from Supabase
-          const { data: ticketData, error: ticketError } = await supabase
-            .from('tickets')
+          const response = await fetch('/api/organizations');
+          if (response.ok) {
+            const data = await response.json();
+            setOrganizations(data.organizations || []);
+          } else {
+            console.error('Failed to fetch organizations from API');
+          }
+        } catch (orgError) {
+          console.error('Failed to fetch organizations:', orgError);
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      }
+    };
+
+    if (open) {
+      fetchData();
+    }
+  }, [open]);
+
+  // Setup real-time subscription for ticket updates
+  useEffect(() => {
+    if (!open || !ticketId) return;
+
+    // Function to setup realtime subscriptions
+    const setupRealtimeSubscription = () => {
+      // Create a channel for this specific ticket
+      const channel = supabase
+        .channel(`ticket-${ticketId}`)
+        // Listen for ticket updates
+        .on('postgres_changes', { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'tickets',
+          filter: `id=eq.${ticketId}`
+        }, (payload) => {
+          console.log('Ticket updated:', payload);
+          // Update the ticket state with new data
+          setTicket(current => current ? { ...current, ...payload.new } : null);
+        })
+        // Listen for new messages
+        .on('postgres_changes', { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'messages',
+          filter: `ticket_id=eq.${ticketId}`
+        }, async (payload) => {
+          console.log('New message received:', payload);
+          
+          // Fetch the profile for this message to get sender info
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('full_name, avatar_url, role')
+            .eq('id', payload.new.user_id)
+            .single();
+            
+          // Add the new message to the list
+          const newMessage: Message = {
+            id: payload.new.id,
+            content: payload.new.content,
+            sender_name: profileData?.full_name || 'Unknown User',
+            sender_avatar: profileData?.avatar_url || undefined,
+            is_customer: profileData?.role === 'customer',
+            created_at: payload.new.created_at,
+            has_attachments: payload.new.has_media || false
+          };
+          
+          setMessages(current => [...current, newMessage]);
+        })
+        .subscribe();
+
+      // Store the channel reference for cleanup
+      realtimeChannelRef.current = channel;
+    };
+
+    // Initial data fetch
+    const fetchTicketData = async () => {
+      setLoading(true);
+      try {
+        // Fetch ticket details from Supabase
+        const { data: ticketData, error: ticketError } = await supabase
+          .from('tickets')
+          .select('*')
+          .eq('id', ticketId)
+          .single();
+
+        if (ticketError) {
+          console.error('Failed to fetch ticket details:', ticketError);
+          setLoading(false);
+          return;
+        }
+
+        // Fetch assignee profile information if there is an assignee
+        let assigneeProfile: Profile | null = null;
+        if (ticketData.assignee_id) {
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
             .select('*')
-            .eq('id', ticketId)
+            .eq('id', ticketData.assignee_id)
             .single();
 
-          if (ticketError) throw new Error('Failed to fetch ticket details');
-          
-          setTicket(ticketData as Ticket);
-          
-          // Fetch messages from Supabase
-          const { data: messagesData, error: messagesError } = await supabase
-            .from('messages')
-            .select(`
-              id, 
-              content,
-              has_media,
-              created_at,
-              profiles:user_id(id, full_name, avatar_url, role)
-            `)
-            .eq('ticket_id', ticketId)
-            .order('created_at', { ascending: true });
+          if (!profileError && profileData) {
+            assigneeProfile = profileData;
+          }
+        }
+        
+        // Set the ticket data directly from the tickets table
+        const ticket: Ticket = {
+          ...ticketData as Ticket,
+          has_media: ticketData.has_media || false
+        };
+        
+        setTicket(ticket);
+        
+        // Fetch messages from Supabase
+        const { data: messagesData, error: messagesError } = await supabase
+          .from('messages')
+          .select(`
+            id, 
+            content,
+            has_media,
+            created_at,
+            profiles:user_id(id, full_name, avatar_url, role)
+          `)
+          .eq('ticket_id', ticketId)
+          .order('created_at', { ascending: true });
 
-          if (messagesError) throw new Error('Failed to fetch messages');
-          
+        if (messagesError) {
+          console.error('Failed to fetch messages:', messagesError);
+          setMessages([]);
+        } else {
           // Transform messages to match our component's expected format
           const formattedMessages = messagesData.map((msg: any) => ({
             id: msg.id,
@@ -82,77 +230,32 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
             sender_avatar: msg.profiles?.avatar_url,
             is_customer: msg.profiles?.role === 'customer',
             created_at: msg.created_at,
-            has_attachments: msg.has_media
+            has_attachments: msg.has_media || false
           }));
           
           setMessages(formattedMessages);
-        } catch (error) {
-          console.error('Error fetching ticket data:', error);
-          // Fallback to mock data if API fails
-          const mockTicket: Ticket = {
-            id: ticketId,
-            title: 'Problem with checkout process',
-            description: 'I tried to complete my purchase but the checkout page keeps showing an error when I click "Confirm Payment".',
-            status: 'in-progress',
-            priority: 'high',
-            type: 'bug',
-            customer_id: 'user-123',
-            customer_name: 'John Smith',
-            customer_email: 'john@example.com',
-            assignee_id: null,
-            created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-            updated_at: new Date(Date.now() - 3600000).toISOString(),
-            has_media: true
-          };
-
-          setTicket(mockTicket);
-          
-          // Mock messages for this ticket
-          const mockMessages: Message[] = [
-            {
-              id: '1',
-              content: 'I tried to complete my purchase but the checkout page keeps showing an error when I click "Confirm Payment".',
-              sender_name: 'John Smith',
-              is_customer: true,
-              created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-              has_attachments: true
-            },
-            {
-              id: '2',
-              content: 'Thanks for reporting this issue. Could you please let me know which payment method you were trying to use?',
-              sender_name: 'Sarah (Support Agent)',
-              sender_avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah',
-              is_customer: false,
-              created_at: new Date(Date.now() - 3600000 * 1.5).toISOString(),
-              has_attachments: false
-            },
-            {
-              id: '3',
-              content: 'I was using a Visa credit card. I attached a screenshot of the error I\'m seeing.',
-              sender_name: 'John Smith',
-              is_customer: true,
-              created_at: new Date(Date.now() - 3600000).toISOString(),
-              has_attachments: true
-            },
-            {
-              id: '4',
-              content: 'I\'ve escalated this to our development team. They believe it might be related to a recent update. We\'ll get this fixed as soon as possible.',
-              sender_name: 'Sarah (Support Agent)',
-              sender_avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah',
-              is_customer: false,
-              created_at: new Date(Date.now() - 1800000).toISOString(),
-              has_attachments: false
-            },
-          ];
-
-          setMessages(mockMessages);
-        } finally {
-          setLoading(false);
         }
-      };
-      
-      fetchTicketData();
-    }
+      } catch (error) {
+        console.error('Error fetching ticket data:', error);
+        setTicket(null);
+        setMessages([]);
+      } finally {
+        setLoading(false);
+        
+        // After data is loaded, setup the realtime subscription
+        setupRealtimeSubscription();
+      }
+    };
+    
+    fetchTicketData();
+
+    // Cleanup function to remove subscription when component unmounts
+    return () => {
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
   }, [open, ticketId]);
 
   // Handle closing the sheet
@@ -417,46 +520,370 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                   <h4 className="text-sm font-medium mb-1">Customer</h4>
                   <div className="flex items-center gap-3 bg-muted p-3 rounded-md">
                     <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium">
-                      {ticket.customer_name.charAt(0)}
+                      {ticket.customer_name && ticket.customer_name.length > 0 ? ticket.customer_name.charAt(0) : '?'}
                     </div>
                     <div>
-                      <div className="font-medium text-sm md:text-base">{ticket.customer_name}</div>
-                      <div className="text-xs md:text-sm text-muted-foreground">{ticket.customer_email}</div>
+                      <div className="font-medium text-sm md:text-base">
+                        {ticket.customer_name || 'Unknown User'}
+                      </div>
+                      <div className="text-xs md:text-sm text-muted-foreground">
+                        {ticket.customer_email || 'No email provided'}
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="space-y-1">
-                  <h4 className="text-sm font-medium">Status</h4>
-                  <div className="flex items-center gap-2">
-                    <Badge>{ticket.status.replace('-', ' ')}</Badge>
-                    <Button variant="outline" size="sm" className="h-7">
-                      Change
-                    </Button>
-                  </div>
+                
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Organization</h4>
+                  {isUpdatingOrganization ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.organization_id || ""}
+                        onValueChange={async (value) => {
+                          try {
+                            if (value === 'create_new') {
+                              // Show organization creation dialog
+                              setIsCreatingOrg(true);
+                              return;
+                            }
+                            
+                            // Using a direct API call for better compatibility
+                            const response = await fetch(`/api/tickets/${ticket.id}`, {
+                              method: 'PATCH',
+                              headers: {
+                                'Content-Type': 'application/json'
+                              },
+                              body: JSON.stringify({
+                                organization_id: value || null
+                              })
+                            });
+                              
+                            if (!response.ok) throw new Error('Failed to update organization');
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update organization:', err);
+                          } finally {
+                            setIsUpdatingOrganization(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select organization" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">None</SelectItem>
+                          {organizations.map(org => (
+                            <SelectItem key={org.id} value={org.id}>
+                              {org.name}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="create_new" className="text-primary">
+                            <span className="flex items-center">
+                              <Plus className="mr-2 h-4 w-4" />
+                              Create New Organization
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingOrganization(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {ticket.organization_id ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">
+                              {organizations.find(o => o?.id === ticket.organization_id)?.name || 'Unknown Organization'}
+                            </span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 ml-auto"
+                            onClick={() => setIsUpdatingOrganization(true)}
+                          >
+                            Change
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => setIsUpdatingOrganization(true)}
+                        >
+                          Add Organization
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Dialog for creating a new organization */}
+                  <Dialog open={isCreatingOrg} onOpenChange={setIsCreatingOrg}>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>Create New Organization</DialogTitle>
+                        <DialogDescription>
+                          Add a new organization for this customer. Click save when you're done.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="grid gap-4 py-4">
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="name" className="text-right">
+                            Name*
+                          </Label>
+                          <Input
+                            id="name"
+                            value={newOrgName}
+                            onChange={(e) => setNewOrgName(e.target.value)}
+                            className="col-span-3"
+                            placeholder="Organization name"
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="website" className="text-right">
+                            Website
+                          </Label>
+                          <Input
+                            id="website"
+                            value={newOrgWebsite}
+                            onChange={(e) => setNewOrgWebsite(e.target.value)}
+                            className="col-span-3"
+                            placeholder="https://example.com"
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="industry" className="text-right">
+                            Industry
+                          </Label>
+                          <Input
+                            id="industry"
+                            value={newOrgIndustry}
+                            onChange={(e) => setNewOrgIndustry(e.target.value)}
+                            className="col-span-3"
+                            placeholder="e.g. Technology, Healthcare, etc."
+                          />
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setIsCreatingOrg(false);
+                            setIsUpdatingOrganization(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="submit"
+                          onClick={async () => {
+                            if (!newOrgName.trim()) {
+                              alert('Organization name is required');
+                              return;
+                            }
+                            
+                            try {
+                              // Create new organization using API
+                              const createResponse = await fetch('/api/organizations', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                  name: newOrgName.trim(),
+                                  website: newOrgWebsite.trim() || null,
+                                  industry: newOrgIndustry.trim() || null,
+                                  status: 'active',
+                                  type: 'end_customer'
+                                })
+                              });
+                              
+                              if (!createResponse.ok) throw new Error('Failed to create organization');
+                              
+                              const newOrgData = await createResponse.json();
+                              const newOrg = newOrgData.organization;
+                              
+                              if (newOrg) {
+                                // Update local state
+                                setOrganizations([...organizations, newOrg]);
+                                
+                                // Update ticket with new organization
+                                const updateResponse = await fetch(`/api/tickets/${ticket.id}`, {
+                                  method: 'PATCH',
+                                  headers: {
+                                    'Content-Type': 'application/json'
+                                  },
+                                  body: JSON.stringify({
+                                    organization_id: newOrg.id
+                                  })
+                                });
+                                  
+                                if (!updateResponse.ok) throw new Error('Failed to update ticket');
+                                
+                                // Reset form
+                                setNewOrgName('');
+                                setNewOrgWebsite('');
+                                setNewOrgIndustry('');
+                                setIsCreatingOrg(false);
+                                setIsUpdatingOrganization(false);
+                              }
+                            } catch (err) {
+                              console.error('Failed to create organization:', err);
+                              alert('Failed to create organization. Please try again.');
+                            }
+                          }}
+                        >
+                          Save
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
                 </div>
 
-                <div className="space-y-1">
-                  <h4 className="text-sm font-medium">Assignee</h4>
-                  <div className="flex items-center gap-2">
-                    {ticket.assignee_id ? (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-medium">
-                            S
-                          </div>
-                          <span className="text-sm">Sarah Johnson</span>
-                        </div>
-                        <Button variant="outline" size="sm" className="h-7 ml-auto">
-                          Change
-                        </Button>
-                      </>
-                    ) : (
-                      <Button variant="outline" size="sm" className="h-7">
-                        Assign
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Status</h4>
+                  {isUpdatingStatus ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.status}
+                        onValueChange={async (value) => {
+                          try {
+                            const { error } = await supabase
+                              .from('tickets')
+                              .update({ status: value })
+                              .eq('id', ticket.id);
+                              
+                            if (error) throw error;
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update status:', err);
+                          } finally {
+                            setIsUpdatingStatus(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="new">New</SelectItem>
+                          <SelectItem value="in-progress">In Progress</SelectItem>
+                          <SelectItem value="on-me">On Me</SelectItem>
+                          <SelectItem value="resolved">Resolved</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingStatus(false)}
+                      >
+                        <X className="h-4 w-4" />
                       </Button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Badge className={
+                        ticket.status === 'new' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
+                        ticket.status === 'in-progress' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300' :
+                        ticket.status === 'on-me' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300' :
+                        ticket.status === 'resolved' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' :
+                        ''
+                      }>
+                        {ticket.status.replace('-', ' ')}
+                      </Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7"
+                        onClick={() => setIsUpdatingStatus(true)}
+                      >
+                        Change
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Assignee</h4>
+                  {isUpdatingAssignee ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.assignee_id || ""}
+                        onValueChange={async (value) => {
+                          try {
+                            const { error } = await supabase
+                              .from('tickets')
+                              .update({ assignee_id: value || null })
+                              .eq('id', ticket.id);
+                              
+                            if (error) throw error;
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update assignee:', err);
+                          } finally {
+                            setIsUpdatingAssignee(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Assign to..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">Unassigned</SelectItem>
+                          {assignees.map(assignee => (
+                            <SelectItem key={assignee.id} value={assignee.id}>
+                              {assignee.full_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingAssignee(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {ticket.assignee_id ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-medium">
+                              {assignees.find(a => a.id === ticket.assignee_id)?.full_name?.charAt(0) || '?'}
+                            </div>
+                            <span className="text-sm">{assignees.find(a => a.id === ticket.assignee_id)?.full_name || 'Unknown'}</span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 ml-auto"
+                            onClick={() => setIsUpdatingAssignee(true)}
+                          >
+                            Change
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => setIsUpdatingAssignee(true)}
+                        >
+                          Assign
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1">

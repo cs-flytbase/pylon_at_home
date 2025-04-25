@@ -1,23 +1,42 @@
 "use client";
 
-import { useState, useEffect } from 'react';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useState, useEffect, useRef } from 'react';
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import { 
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Ticket } from '@/types/ticket';
-import { X, User, Clock, MessageSquare, Paperclip, Send } from 'lucide-react';
+import { Profile, Organization } from '@/types/database';
+import { X, User, Clock, MessageSquare, Paperclip, Send, Check, Plus, Building2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { formatTimeAgo } from '@/lib/utils';
 import React from 'react';
-import { createClient } from '@/utils/supabase/client';
-import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 type Message = {
   id: string;
   content: string;
   sender_name: string;
-  sender_avatar?: string;
+  sender_avatar?: string | null;
   is_customer: boolean;
   created_at: string;
   has_attachments: boolean;
@@ -29,6 +48,8 @@ type TicketDetailsSheetProps = {
   onOpenChange: (open: boolean) => void;
 };
 
+// No need to redefine Organization as we're importing it from database.ts
+
 export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetailsSheetProps): React.ReactNode {
   const router = useRouter();
   const [ticket, setTicket] = useState<Ticket | null>(null);
@@ -36,184 +57,205 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   const [loading, setLoading] = useState(true);
   const [newMessage, setNewMessage] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
+  const [assignees, setAssignees] = useState<Profile[]>([]);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isUpdatingAssignee, setIsUpdatingAssignee] = useState(false);
+  const [isUpdatingOrganization, setIsUpdatingOrganization] = useState(false);
+  const [newOrgName, setNewOrgName] = useState('');
+  const [newOrgWebsite, setNewOrgWebsite] = useState('');
+  const [newOrgIndustry, setNewOrgIndustry] = useState('');
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  const realtimeChannelRef = useRef<RealtimeChannel | null>(null);
   
   // If the component is being used inside the ticket-detail-overlay, we want to
   // render the content directly without the Sheet wrapper
   const isStandaloneView = typeof document !== 'undefined' ? 
     !!document.querySelector('.ticket-detail-overlay') : false;
 
-  // Fetch ticket details and messages from Supabase
+  // Fetch all assignees (profiles) and organizations
   useEffect(() => {
-    if (open && ticketId) {
-      setLoading(true);
+    const fetchData = async () => {
+      try {
+        // Fetch assignees
+        const { data: assigneeData, error: assigneeError } = await supabase
+          .from('profiles')
+          .select('*')
+          .order('full_name', { ascending: true });
 
-      const fetchTicketData = async () => {
+        if (assigneeError) {
+          console.error('Failed to fetch assignees:', assigneeError);
+        } else {
+          setAssignees(assigneeData || []);
+        }
+        
+        // Fetch organizations - using direct API call since Supabase types may not be updated
         try {
-          // Initialize Supabase client
-          const supabase = createClient();
+          const response = await fetch('/api/organizations');
+          if (response.ok) {
+            const data = await response.json();
+            setOrganizations(data.organizations || []);
+          } else {
+            console.error('Failed to fetch organizations from API');
+          }
+        } catch (orgError) {
+          console.error('Failed to fetch organizations:', orgError);
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      }
+    };
+
+    if (open) {
+      fetchData();
+    }
+  }, [open]);
+
+  // Setup real-time subscription for ticket updates
+  useEffect(() => {
+    if (!open || !ticketId) return;
+
+    // Function to setup realtime subscriptions
+    const setupRealtimeSubscription = () => {
+      // Create a channel for this specific ticket
+      const channel = supabase
+        .channel(`ticket-${ticketId}`)
+        // Listen for ticket updates
+        .on('postgres_changes', { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'tickets',
+          filter: `id=eq.${ticketId}`
+        }, (payload) => {
+          console.log('Ticket updated:', payload);
+          // Update the ticket state with new data
+          setTicket(current => current ? { ...current, ...payload.new } : null);
+        })
+        // Listen for new messages
+        .on('postgres_changes', { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'messages',
+          filter: `ticket_id=eq.${ticketId}`
+        }, async (payload) => {
+          console.log('New message received:', payload);
           
-          // Fetch ticket details from Supabase with customer and assignee information
-          const { data: ticketData, error: ticketError } = await supabase
-            .from('tickets')
-            .select(`
-              *,
-              customer:customer_id (
-                id,
-                full_name,
-                email,
-                avatar_url
-              ),
-              assignee:assignee_id (
-                id,
-                full_name,
-                email,
-                avatar_url,
-                role
-              )
-            `)
-            .eq('id', ticketId)
+          // Fetch the profile for this message to get sender info
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('full_name, avatar_url, role')
+            .eq('id', payload.new.user_id)
+            .single();
+            
+          // Add the new message to the list
+          const newMessage: Message = {
+            id: payload.new.id,
+            content: payload.new.content,
+            sender_name: profileData?.full_name || 'Unknown User',
+            sender_avatar: profileData?.avatar_url || undefined,
+            is_customer: profileData?.role === 'customer',
+            created_at: payload.new.created_at,
+            has_attachments: payload.new.has_media || false
+          };
+          
+          setMessages(current => [...current, newMessage]);
+        })
+        .subscribe();
+
+      // Store the channel reference for cleanup
+      realtimeChannelRef.current = channel;
+    };
+
+    // Initial data fetch
+    const fetchTicketData = async () => {
+      setLoading(true);
+      try {
+        // Fetch ticket details from Supabase
+        const { data: ticketData, error: ticketError } = await supabase
+          .from('tickets')
+          .select('*')
+          .eq('id', ticketId)
+          .single();
+
+        if (ticketError) {
+          console.error('Failed to fetch ticket details:', ticketError);
+          setLoading(false);
+          return;
+        }
+
+        // Fetch assignee profile information if there is an assignee
+        let assigneeProfile: Profile | null = null;
+        if (ticketData.assignee_id) {
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', ticketData.assignee_id)
             .single();
 
-          if (ticketError) {
-            console.error('Error fetching ticket:', ticketError);
-            toast.error('Failed to fetch ticket data');
-            throw ticketError;
+          if (!profileError && profileData) {
+            assigneeProfile = profileData;
           }
-          
-          if (!ticketData) {
-            toast.error('Ticket not found');
-            throw new Error('Ticket not found');
-          }
-          
-          console.log('Fetched ticket data:', ticketData);
-          setTicket(ticketData as Ticket);
-          
-          // Fetch messages from Supabase
-          const fetchMessages = async () => {
-  try {
-    const supabase = createClient();
-    // Fetch messages for this ticket (no join)
-    const { data: messagesData, error: messagesError } = await supabase
-      .from('messages')
-      .select(`
-        id,
-        content,
-        has_media,
-        created_at,
-        is_internal,
-        channel,
-        user_id
-      `)
-      .eq('ticket_id', ticketId)
-      .order('created_at', { ascending: true });
-
-    if (messagesError) {
-      console.error('Error fetching messages:', messagesError);
-      toast.error('Failed to fetch message history');
-      throw messagesError;
-    }
-
-    // Get all unique user_ids
-    const userIds = Array.from(new Set((messagesData || []).map((msg: any) => msg.user_id).filter(Boolean)));
-    let profilesById: Record<string, any> = {};
-    if (userIds.length > 0) {
-      // Fetch profiles in one go
-      const { data: profilesData, error: profilesError } = await supabase
-        .from('profiles')
-        .select('id,full_name,avatar_url,role,email')
-        .in('id', userIds);
-      if (profilesError) {
-        console.error('Error fetching profiles:', profilesError);
-        toast.error('Failed to load user info');
-      } else {
-        profilesById = Object.fromEntries((profilesData || []).map((p: any) => [p.id, p]));
-      }
-    }
-
-    // Transform messages to match our component's expected format
-    const formattedMessages = (messagesData || []).map((msg: any) => {
-      const user = profilesById[msg.user_id] || {};
-      return {
-        id: msg.id,
-        content: msg.content,
-        sender_name: user.full_name || 'Unknown User',
-        sender_avatar: user.avatar_url,
-        is_customer: false, // Only platform users can send messages
-        created_at: msg.created_at,
-        has_attachments: msg.has_media,
-        is_internal: msg.is_internal,
-        channel: msg.channel || 'web',
-      };
-    });
-    setMessages(formattedMessages);
-  } catch (error) {
-    console.error('Error fetching messages:', error);
-  }
-};
-          await fetchMessages();
-        } catch (error) {
-          console.error('Error in ticket data fetch:', error);
-          
-          // Only use mock data in development environment
-          if (process.env.NODE_ENV === 'development') {
-            console.warn('Using mock ticket data for development');
-            
-            const mockTicket: Ticket = {
-              id: ticketId,
-              title: 'Development Mode - Sample Ticket',
-              description: 'This is sample ticket data used in development mode when real data cannot be retrieved.',
-              status: 'in-progress',
-              priority: 'high',
-              type: 'bug',
-              customer_id: 'dev-user-123',
-              customer_name: 'Development User',
-              customer_email: 'dev@example.com',
-              assignee_id: null,
-              department: null,
-              created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-              updated_at: new Date(Date.now() - 3600000).toISOString(),
-              has_media: false,
-              resolved_at: null
-            };
-
-            setTicket(mockTicket);
-            
-            // Mock messages for this ticket
-            const mockMessages: Message[] = [
-              {
-                id: 'dev-1',
-                content: 'This is a development mode message. The real messages cannot be loaded.',
-                sender_name: 'Development User',
-                is_customer: true,
-                created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-                has_attachments: false
-              },
-              {
-                id: 'dev-2',
-                content: 'This is a sample response message.',
-                sender_name: 'Support Agent',
-                sender_avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Dev',
-                is_customer: false,
-                created_at: new Date(Date.now() - 3600000).toISOString(),
-                has_attachments: false
-              }
-            ];
-
-            setMessages(mockMessages);
-          } else {
-            // In production, show error state and don't use mock data
-            toast.error('Could not load ticket data');
-            // Keep ticket and messages as null/empty to show proper error state
-            setTicket(null);
-            setMessages([]);
-          }
-        } finally {
-          setLoading(false);
         }
-      };
-      
-      fetchTicketData();
-    }
+        
+        // Set the ticket data directly from the tickets table
+        const ticket: Ticket = {
+          ...ticketData as Ticket,
+          has_media: ticketData.has_media || false
+        };
+        
+        setTicket(ticket);
+        
+        // Fetch messages from Supabase
+        const { data: messagesData, error: messagesError } = await supabase
+          .from('messages')
+          .select(`
+            id, 
+            content,
+            has_media,
+            created_at,
+            profiles:user_id(id, full_name, avatar_url, role)
+          `)
+          .eq('ticket_id', ticketId)
+          .order('created_at', { ascending: true });
+
+        if (messagesError) {
+          console.error('Failed to fetch messages:', messagesError);
+          setMessages([]);
+        } else {
+          // Transform messages to match our component's expected format
+          const formattedMessages = messagesData.map((msg: any) => ({
+            id: msg.id,
+            content: msg.content,
+            sender_name: msg.profiles?.full_name || 'Unknown User',
+            sender_avatar: msg.profiles?.avatar_url,
+            is_customer: msg.profiles?.role === 'customer',
+            created_at: msg.created_at,
+            has_attachments: msg.has_media || false
+          }));
+          
+          setMessages(formattedMessages);
+        }
+      } catch (error) {
+        console.error('Error fetching ticket data:', error);
+        setTicket(null);
+        setMessages([]);
+      } finally {
+        setLoading(false);
+        
+        // After data is loaded, setup the realtime subscription
+        setupRealtimeSubscription();
+      }
+    };
+    
+    fetchTicketData();
+
+    // Cleanup function to remove subscription when component unmounts
+    return () => {
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
   }, [open, ticketId]);
 
   // Handle closing the sheet
@@ -234,7 +276,6 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
     if (!newMessage.trim()) return;
 
     // Get current user ID
-    const supabase = createClient();
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user) {
@@ -244,45 +285,27 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
 
     // Add new message to the local state optimistically
     const tempId = `temp-${Date.now()}`;
-    // Get user's profile info for optimistic message
-let senderName = user.user_metadata?.full_name || user.email || 'You';
-let senderAvatar = user.user_metadata?.avatar_url;
-if (!senderAvatar) {
-  // Try to fetch from profiles
-  const { data: profileData } = await supabase
-    .from('profiles')
-    .select('full_name,avatar_url')
-    .eq('id', user.id)
-    .single();
-  if (profileData) {
-    senderName = profileData.full_name || senderName;
-    senderAvatar = profileData.avatar_url || senderAvatar;
-  }
-}
-const newMsg: Message = {
-  id: tempId,
-  content: newMessage,
-  sender_name: senderName,
-  sender_avatar: senderAvatar,
-  is_customer: false,
-  created_at: new Date().toISOString(),
-  has_attachments: false
-};
+    const newMsg: Message = {
+      id: tempId,
+      content: newMessage,
+      sender_name: 'Support Agent',
+      sender_avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Agent',
+      is_customer: false,
+      created_at: new Date().toISOString(),
+      has_attachments: false
+    };
 
     setMessages([...messages, newMsg]);
     setNewMessage('');
 
     try {
       // Send the message to Supabase
-      const supabase = createClient();
       const { data, error } = await supabase
         .from('messages')
         .insert([
           {
             ticket_id: ticketId,
             user_id: user.id,
-            sender_id: user.id,
-            sender_type: 'agent',
             content: newMessage,
             has_media: false
           }
@@ -304,7 +327,6 @@ const newMsg: Message = {
         );
 
         // Also update the ticket's updated_at timestamp
-        const supabase = createClient();
         await supabase
           .from('tickets')
           .update({ updated_at: new Date().toISOString() })
@@ -314,7 +336,7 @@ const newMsg: Message = {
       console.error('Error sending message:', error);
       // Remove the temp message if it failed
       setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
-      toast.error('Failed to send message. Please try again.');
+      alert('Failed to send message. Please try again.');
     }
   };
 
@@ -416,7 +438,7 @@ const newMsg: Message = {
               <div key={message.id} className={`flex items-start gap-2 md:gap-3 ${message.is_customer ? '' : 'justify-end'}`}>
                 {message.is_customer && (
                   <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium">
-                    {message.sender_name ? message.sender_name.charAt(0) : '?'}
+                    {message.sender_name.charAt(0)}
                   </div>
                 )}
                 <div className={`max-w-[80%] ${message.is_customer ? '' : 'order-1'}`}>
@@ -441,7 +463,7 @@ const newMsg: Message = {
                   <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-medium">
                     {message.sender_avatar 
                       ? <img src={message.sender_avatar} alt={message.sender_name} className="h-8 w-8 md:h-10 md:w-10 rounded-full" /> 
-                      : message.sender_name ? message.sender_name.charAt(0) : '?'
+                      : message.sender_name.charAt(0)
                     }
                   </div>
                 )}
@@ -498,46 +520,370 @@ const newMsg: Message = {
                   <h4 className="text-sm font-medium mb-1">Customer</h4>
                   <div className="flex items-center gap-3 bg-muted p-3 rounded-md">
                     <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium">
-                      {ticket.customer_name ? ticket.customer_name.charAt(0) : '?'}
+                      {ticket.customer_name && ticket.customer_name.length > 0 ? ticket.customer_name.charAt(0) : '?'}
                     </div>
                     <div>
-                      <div className="font-medium text-sm md:text-base">{ticket.customer_name}</div>
-                      <div className="text-xs md:text-sm text-muted-foreground">{ticket.customer_email}</div>
+                      <div className="font-medium text-sm md:text-base">
+                        {ticket.customer_name || 'Unknown User'}
+                      </div>
+                      <div className="text-xs md:text-sm text-muted-foreground">
+                        {ticket.customer_email || 'No email provided'}
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="space-y-1">
-                  <h4 className="text-sm font-medium">Status</h4>
-                  <div className="flex items-center gap-2">
-                    <Badge>{ticket.status.replace('-', ' ')}</Badge>
-                    <Button variant="outline" size="sm" className="h-7">
-                      Change
-                    </Button>
-                  </div>
+                
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Organization</h4>
+                  {isUpdatingOrganization ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.organization_id || ""}
+                        onValueChange={async (value) => {
+                          try {
+                            if (value === 'create_new') {
+                              // Show organization creation dialog
+                              setIsCreatingOrg(true);
+                              return;
+                            }
+                            
+                            // Using a direct API call for better compatibility
+                            const response = await fetch(`/api/tickets/${ticket.id}`, {
+                              method: 'PATCH',
+                              headers: {
+                                'Content-Type': 'application/json'
+                              },
+                              body: JSON.stringify({
+                                organization_id: value || null
+                              })
+                            });
+                              
+                            if (!response.ok) throw new Error('Failed to update organization');
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update organization:', err);
+                          } finally {
+                            setIsUpdatingOrganization(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select organization" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">None</SelectItem>
+                          {organizations.map(org => (
+                            <SelectItem key={org.id} value={org.id}>
+                              {org.name}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="create_new" className="text-primary">
+                            <span className="flex items-center">
+                              <Plus className="mr-2 h-4 w-4" />
+                              Create New Organization
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingOrganization(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {ticket.organization_id ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">
+                              {organizations.find(o => o?.id === ticket.organization_id)?.name || 'Unknown Organization'}
+                            </span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 ml-auto"
+                            onClick={() => setIsUpdatingOrganization(true)}
+                          >
+                            Change
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => setIsUpdatingOrganization(true)}
+                        >
+                          Add Organization
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Dialog for creating a new organization */}
+                  <Dialog open={isCreatingOrg} onOpenChange={setIsCreatingOrg}>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>Create New Organization</DialogTitle>
+                        <DialogDescription>
+                          Add a new organization for this customer. Click save when you're done.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="grid gap-4 py-4">
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="name" className="text-right">
+                            Name*
+                          </Label>
+                          <Input
+                            id="name"
+                            value={newOrgName}
+                            onChange={(e) => setNewOrgName(e.target.value)}
+                            className="col-span-3"
+                            placeholder="Organization name"
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="website" className="text-right">
+                            Website
+                          </Label>
+                          <Input
+                            id="website"
+                            value={newOrgWebsite}
+                            onChange={(e) => setNewOrgWebsite(e.target.value)}
+                            className="col-span-3"
+                            placeholder="https://example.com"
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                          <Label htmlFor="industry" className="text-right">
+                            Industry
+                          </Label>
+                          <Input
+                            id="industry"
+                            value={newOrgIndustry}
+                            onChange={(e) => setNewOrgIndustry(e.target.value)}
+                            className="col-span-3"
+                            placeholder="e.g. Technology, Healthcare, etc."
+                          />
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setIsCreatingOrg(false);
+                            setIsUpdatingOrganization(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="submit"
+                          onClick={async () => {
+                            if (!newOrgName.trim()) {
+                              alert('Organization name is required');
+                              return;
+                            }
+                            
+                            try {
+                              // Create new organization using API
+                              const createResponse = await fetch('/api/organizations', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                  name: newOrgName.trim(),
+                                  website: newOrgWebsite.trim() || null,
+                                  industry: newOrgIndustry.trim() || null,
+                                  status: 'active',
+                                  type: 'end_customer'
+                                })
+                              });
+                              
+                              if (!createResponse.ok) throw new Error('Failed to create organization');
+                              
+                              const newOrgData = await createResponse.json();
+                              const newOrg = newOrgData.organization;
+                              
+                              if (newOrg) {
+                                // Update local state
+                                setOrganizations([...organizations, newOrg]);
+                                
+                                // Update ticket with new organization
+                                const updateResponse = await fetch(`/api/tickets/${ticket.id}`, {
+                                  method: 'PATCH',
+                                  headers: {
+                                    'Content-Type': 'application/json'
+                                  },
+                                  body: JSON.stringify({
+                                    organization_id: newOrg.id
+                                  })
+                                });
+                                  
+                                if (!updateResponse.ok) throw new Error('Failed to update ticket');
+                                
+                                // Reset form
+                                setNewOrgName('');
+                                setNewOrgWebsite('');
+                                setNewOrgIndustry('');
+                                setIsCreatingOrg(false);
+                                setIsUpdatingOrganization(false);
+                              }
+                            } catch (err) {
+                              console.error('Failed to create organization:', err);
+                              alert('Failed to create organization. Please try again.');
+                            }
+                          }}
+                        >
+                          Save
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
                 </div>
 
-                <div className="space-y-1">
-                  <h4 className="text-sm font-medium">Assignee</h4>
-                  <div className="flex items-center gap-2">
-                    {ticket.assignee_id ? (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-medium">
-                            S
-                          </div>
-                          <span className="text-sm">Sarah Johnson</span>
-                        </div>
-                        <Button variant="outline" size="sm" className="h-7 ml-auto">
-                          Change
-                        </Button>
-                      </>
-                    ) : (
-                      <Button variant="outline" size="sm" className="h-7">
-                        Assign
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Status</h4>
+                  {isUpdatingStatus ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.status}
+                        onValueChange={async (value) => {
+                          try {
+                            const { error } = await supabase
+                              .from('tickets')
+                              .update({ status: value })
+                              .eq('id', ticket.id);
+                              
+                            if (error) throw error;
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update status:', err);
+                          } finally {
+                            setIsUpdatingStatus(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="new">New</SelectItem>
+                          <SelectItem value="in-progress">In Progress</SelectItem>
+                          <SelectItem value="on-me">On Me</SelectItem>
+                          <SelectItem value="resolved">Resolved</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingStatus(false)}
+                      >
+                        <X className="h-4 w-4" />
                       </Button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Badge className={
+                        ticket.status === 'new' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
+                        ticket.status === 'in-progress' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300' :
+                        ticket.status === 'on-me' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300' :
+                        ticket.status === 'resolved' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' :
+                        ''
+                      }>
+                        {ticket.status.replace('-', ' ')}
+                      </Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7"
+                        onClick={() => setIsUpdatingStatus(true)}
+                      >
+                        Change
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Assignee</h4>
+                  {isUpdatingAssignee ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        defaultValue={ticket.assignee_id || ""}
+                        onValueChange={async (value) => {
+                          try {
+                            const { error } = await supabase
+                              .from('tickets')
+                              .update({ assignee_id: value || null })
+                              .eq('id', ticket.id);
+                              
+                            if (error) throw error;
+                            // Ticket will update via real-time subscription
+                          } catch (err) {
+                            console.error('Failed to update assignee:', err);
+                          } finally {
+                            setIsUpdatingAssignee(false);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Assign to..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">Unassigned</SelectItem>
+                          {assignees.map(assignee => (
+                            <SelectItem key={assignee.id} value={assignee.id}>
+                              {assignee.full_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsUpdatingAssignee(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {ticket.assignee_id ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-medium">
+                              {assignees.find(a => a.id === ticket.assignee_id)?.full_name?.charAt(0) || '?'}
+                            </div>
+                            <span className="text-sm">{assignees.find(a => a.id === ticket.assignee_id)?.full_name || 'Unknown'}</span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 ml-auto"
+                            onClick={() => setIsUpdatingAssignee(true)}
+                          >
+                            Change
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => setIsUpdatingAssignee(true)}
+                        >
+                          Assign
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1">
@@ -579,9 +925,6 @@ const newMsg: Message = {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:w-[90vw] md:w-[80vw] lg:w-[70vw] max-w-full p-0 flex flex-col">
-        <SheetHeader className="sr-only">
-          <SheetTitle>Ticket Details</SheetTitle>
-        </SheetHeader>
         {renderContent()}
       </SheetContent>
     </Sheet>

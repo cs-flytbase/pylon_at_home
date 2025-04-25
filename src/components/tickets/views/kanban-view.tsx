@@ -136,7 +136,7 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
   useEffect(() => {
     const fetchTickets = async () => {
       try {
-        setLoading(true);
+        setLoading(true); // Only set loading on initial mount or full refresh
         console.log('Fetching tickets for Kanban board...');
         
         // Initialize the Supabase client
@@ -210,7 +210,7 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
         logDatabaseError(err, 'tickets', 'kanban_fetch');
         console.error('Error fetching tickets for Kanban board:', err);
       } finally {
-        setLoading(false);
+        setLoading(false); // Always unlock the board after error recovery
       }
     };
 
@@ -220,7 +220,8 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
   // Handle updating a ticket's status using Supabase
   const handleStatusChange = async (ticketId: string, newStatus: string, sourceStatus: string) => {
     try {
-      setLoading(true);
+      // Only set loading for the affected ticket/column if needed, but do not block the whole board
+      // setLoading(true); // <-- Remove this line to prevent global loading lock
       console.log(`Updating ticket ${ticketId} status from ${sourceStatus} to ${newStatus}`);
       
       // Initialize the Supabase client
@@ -258,7 +259,7 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
       // Roll back the UI change by fetching fresh data
       const fetchTickets = async () => {
         try {
-          setLoading(true);
+          // setLoading(true); // Don't lock the board again here
           
           let tickets: Ticket[] = [];
           
