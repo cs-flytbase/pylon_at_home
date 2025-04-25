@@ -33,7 +33,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     
-    return NextResponse.json(data);
+    return NextResponse.json({ organizations: data });
   } catch (err) {
     logDatabaseError(err, "organizations", "getAll_exception");
     return NextResponse.json(
@@ -50,9 +50,9 @@ export async function POST(request: Request) {
     const supabase = await createClient();
     
     // Validate the organization data
-    if (!organizationData.name || !organizationData.type) {
+    if (!organizationData.name) {
       return NextResponse.json(
-        { error: "Name and type are required" },
+        { error: "Organization name is required" },
         { status: 400 }
       );
     }

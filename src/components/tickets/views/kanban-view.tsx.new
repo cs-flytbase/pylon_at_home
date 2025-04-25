@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { TicketCard } from '../ticket-card';
 import { Ticket } from '@/types/database';
 import { AlertCircle } from 'lucide-react';
@@ -71,12 +71,6 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
-  
-  // Set up DnD sensors - must be defined at the top level for React hooks ordering
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
   
   // Initialize Supabase client
   const supabase = createClient();
@@ -325,10 +319,10 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
     return null;
   };
   
-  // Function to get all ticket IDs for SortableContext - using useMemo to avoid recalculations
-  const ticketIds = useMemo(() => {
+  // Function to get all ticket IDs for SortableContext
+  const getTicketIds = () => {
     return Object.values(ticketsByStatus).flat().map(ticket => ticket.id);
-  }, [ticketsByStatus]);
+  };
   
   // Handle the start of a drag operation
   const handleDragStart = (event: DragStartEvent) => {
@@ -472,14 +466,17 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
   return (
     <div className="space-y-6">
       <DndContext 
-        sensors={sensors}
+        sensors={useSensors(
+          useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+          useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+        )}
         collisionDetection={closestCorners}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
         <div className="flex space-x-4 overflow-x-auto pb-4 -mx-4 px-4 md:-mx-6 md:px-6">
-          <SortableContext items={ticketIds} strategy={verticalListSortingStrategy}>
+          <SortableContext items={getTicketIds()} strategy={verticalListSortingStrategy}>
             {columns.map((column) => (
               <KanbanColumn
                 key={column.id}

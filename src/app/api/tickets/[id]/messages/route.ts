@@ -74,6 +74,9 @@ export async function POST(
 
     // In a real app, you would validate that the user has permission to post to this ticket
     const supabase = createServerClient();
+    
+    // Use the real user ID or fallback to a default
+    const actualUserId = userId || 'agent-1'; // Default to a system agent if no userId provided
 
     // Insert the new message into Supabase
     const { data: message, error } = await supabase
@@ -81,7 +84,7 @@ export async function POST(
       .insert({
         ticket_id: id,
         content,
-        user_id: userId || 'agent-1', // Default to a system agent if no userId provided
+        user_id: actualUserId,
         has_media: false,
         is_internal: false,
         channel: 'web'
@@ -122,6 +125,43 @@ export async function POST(
         role: message.profiles.role
       }
     };
+    
+    // Send data to the n8n webhook
+    try {
+      const webhookUrl = 'https://flytbasecs69.app.n8n.cloud/webhook/b2217366-5d68-45c0-92c9-49573ed6cff2';
+      
+      // Prepare the payload for the webhook
+      const webhookPayload = {
+        ticket_id: id,
+        user_id: actualUserId,
+        message_id: message.id,
+        content: message.content,
+        timestamp: new Date().toISOString(),
+        action: 'message_sent'
+      };
+      
+      // Fire and forget - don't await this to avoid blocking the response
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(webhookPayload)
+      }).then(response => {
+        if (!response.ok) {
+          console.error(`Webhook error: ${response.status}`);
+        } else {
+          console.log('Webhook notification sent successfully');
+        }
+      }).catch(err => {
+        console.error('Error sending webhook notification:', err);
+      });
+      
+      console.log('Webhook notification triggered for new message');
+    } catch (webhookError) {
+      // Log webhook errors but don't fail the main request
+      console.error('Failed to trigger webhook notification:', webhookError);
+    }
     
     return NextResponse.json({ message: formattedMessage });
   } catch (error) {  

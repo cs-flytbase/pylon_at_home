@@ -4,8 +4,8 @@ import { useState, useEffect } from 'react';
 import { KanbanColumn } from './KanbanColumn';
 import { AlertCircleIcon } from '@/components/ui/icons';
 import { Ticket } from '@/types/ticket';
-import { DndContext, DragOverlay, closestCorners, useSensor, useSensors, PointerSensor, DragStartEvent, DragOverEvent, DragEndEvent } from '@dnd-kit/core';
-import { arrayMove, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { DndContext, DragOverlay, closestCorners, useSensor, useSensors, PointerSensor, KeyboardSensor, DragStartEvent, DragOverEvent, DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, SortableContext, verticalListSortingStrategy, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { TicketCard } from './TicketCard';
 
 // Column configuration for the Kanban board
@@ -29,10 +29,13 @@ export function KanbanBoard() {
   const [error, setError] = useState<string | null>(null);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
 
-  // Configure the drag sensors (for pointer/mouse and touch)
+  // Configure the drag sensors (for pointer/mouse, touch, and keyboard)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 5 }, // Only start dragging after moving 5px
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
     })
   );
 
@@ -93,6 +96,25 @@ export function KanbanBoard() {
     }
   };
 
+  // Helper function to find a ticket by ID across all columns
+  const findCard = (id: string): Ticket | null => {
+    for (const status in ticketsByStatus) {
+      const ticket = ticketsByStatus[status].find(ticket => ticket.id === id);
+      if (ticket) return ticket;
+    }
+    return null;
+  };
+
+  // Helper function to find which column a ticket is in
+  const findCardColumn = (id: string): string | null => {
+    for (const status in ticketsByStatus) {
+      if (ticketsByStatus[status].some(ticket => ticket.id === id)) {
+        return status;
+      }
+    }
+    return null;
+  };
+
   // Handle when drag is over a droppable area
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event;
@@ -104,90 +126,57 @@ export function KanbanBoard() {
     // If the item is dropped over itself, do nothing
     if (activeId === overId) return;
 
-    // Get the column id and ticket info from the dragged item
-    let activeColId: string | null = null;
-    let activeTicketIndex = -1;
-    let activeTicket: Ticket | null = null;
+    // Get the active ticket and its column
+    const activeCard = findCard(activeId);
+    const activeColumn = findCardColumn(activeId);
 
-    // Find the source column and ticket
-    for (const colId in ticketsByStatus) {
-      const ticketIndex = ticketsByStatus[colId].findIndex(ticket => ticket.id === activeId);
-      if (ticketIndex >= 0) {
-        activeColId = colId;
-        activeTicketIndex = ticketIndex;
-        activeTicket = ticketsByStatus[colId][ticketIndex];
-        break;
-      }
-    }
+    if (!activeCard || !activeColumn) return;
 
-    if (!activeColId || !activeTicket) return;
-
-    // Check if over id is a column id
+    // Check if dropping on a column
     const isOverColumn = columns.some(col => col.id === overId);
 
     if (isOverColumn) {
-      // Handle dropping on a column
-      const newColumn = overId;
+      // Handle dropping on a column (column ID is the over ID)
+      const overColumnId = overId;
       
       // If column hasn't changed, do nothing
-      if (activeColId === newColumn) return;
+      if (activeColumn === overColumnId) return;
 
-      const updatedTickets = {...ticketsByStatus};
-      
-      // Remove from original column
-      updatedTickets[activeColId] = ticketsByStatus[activeColId].filter(
-        ticket => ticket.id !== activeId
-      );
-      
-      // Add to new column
-      updatedTickets[newColumn] = [
-        ...ticketsByStatus[newColumn],
-        { ...activeTicket, status: newColumn }
-      ];
-      
-      setTicketsByStatus(updatedTickets);
+      setTicketsByStatus(prev => ({
+        ...prev,
+        [activeColumn]: prev[activeColumn].filter(card => card.id !== activeId),
+        [overColumnId]: [...prev[overColumnId], { ...activeCard, status: overColumnId }]
+      }));
     } else {
-      // Handle reordering within a column or moving to a specific position in another column
-      let overColId: string | null = null;
-      let overTicketIndex = -1;
-      
-      // Find the target column and position
-      for (const colId in ticketsByStatus) {
-        const ticketIndex = ticketsByStatus[colId].findIndex(ticket => ticket.id === overId);
-        if (ticketIndex >= 0) {
-          overColId = colId;
-          overTicketIndex = ticketIndex;
-          break;
-        }
-      }
+      // Dropping on another card
+      const overCard = findCard(overId);
+      const overColumn = findCardColumn(overId);
 
-      if (!overColId) return;
+      if (!overCard || !overColumn) return;
 
-      const updatedTickets = {...ticketsByStatus};
-
-      // Same column reordering
-      if (activeColId === overColId) {
-        updatedTickets[activeColId] = arrayMove(
-          ticketsByStatus[activeColId],
-          activeTicketIndex,
-          overTicketIndex
-        );
+      // If dropping in the same column, reorder
+      if (activeColumn === overColumn) {
+        const oldIndex = ticketsByStatus[activeColumn].findIndex(card => card.id === activeId);
+        const newIndex = ticketsByStatus[overColumn].findIndex(card => card.id === overId);
+        
+        setTicketsByStatus(prev => ({
+          ...prev,
+          [activeColumn]: arrayMove(prev[activeColumn], oldIndex, newIndex)
+        }));
       } else {
-        // Move to a different column at a specific position
-        const ticketToMove = { ...activeTicket, status: overColId };
-        
-        // Remove from original position
-        updatedTickets[activeColId] = ticketsByStatus[activeColId].filter(
-          ticket => ticket.id !== activeId
-        );
-        
-        // Insert at specific position in new column
-        const newColTickets = [...ticketsByStatus[overColId]];
-        newColTickets.splice(overTicketIndex, 0, ticketToMove);
-        updatedTickets[overColId] = newColTickets;
+        // Moving to a different column at a specific position
+        const newIndex = ticketsByStatus[overColumn].findIndex(card => card.id === overId);
+
+        setTicketsByStatus(prev => ({
+          ...prev,
+          [activeColumn]: prev[activeColumn].filter(card => card.id !== activeId),
+          [overColumn]: [
+            ...prev[overColumn].slice(0, newIndex),
+            { ...activeCard, status: overColumn },
+            ...prev[overColumn].slice(newIndex)
+          ]
+        }));
       }
-      
-      setTicketsByStatus(updatedTickets);
     }
   };
 
@@ -280,9 +269,9 @@ export function KanbanBoard() {
       </div>
       
       {/* Drag overlay to show the ticket being dragged */}
-      <DragOverlay adjustScale={true}>
+      <DragOverlay adjustScale={true} zIndex={999}>
         {activeTicket ? (
-          <div className="w-full opacity-80">
+          <div className="w-full opacity-80 rotate-3 scale-105">
             <TicketCard ticket={activeTicket} isDragging />
           </div>
         ) : null}

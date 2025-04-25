@@ -66,13 +66,25 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   const [newOrgWebsite, setNewOrgWebsite] = useState('');
   const [newOrgIndustry, setNewOrgIndustry] = useState('');
   const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  
+  // State for editing ticket properties
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [editedTitle, setEditedTitle] = useState('');
+  const [editedDescription, setEditedDescription] = useState('');
+  
+  // State for notes functionality
+  const [notes, setNotes] = useState<{id: string; content: string; created_at: string}[]>([]);
+  const [newNote, setNewNote] = useState('');
+  const [isAddingNote, setIsAddingNote] = useState(false);
+  
   const realtimeChannelRef = useRef<RealtimeChannel | null>(null);
   
   // If the component is being used inside the ticket-detail-overlay, we want to
   // render the content directly without the Sheet wrapper
   const isStandaloneView = typeof document !== 'undefined' ? 
     !!document.querySelector('.ticket-detail-overlay') : false;
-
+    
   // Fetch all assignees (profiles) and organizations
   useEffect(() => {
     const fetchData = async () => {
@@ -89,12 +101,13 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
           setAssignees(assigneeData || []);
         }
         
-        // Fetch organizations - using direct API call since Supabase types may not be updated
+        // Fetch organizations via API instead of direct supabase query to avoid typing issues
         try {
           const response = await fetch('/api/organizations');
           if (response.ok) {
-            const data = await response.json();
-            setOrganizations(data.organizations || []);
+            const orgsData = await response.json();
+            setOrganizations(orgsData || []);
+            console.log('Organizations loaded:', orgsData);
           } else {
             console.error('Failed to fetch organizations from API');
           }
@@ -273,30 +286,34 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   // Handle sending a new message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || !ticketId) return;
 
-    // Get current user ID
-    const { data: { user } } = await supabase.auth.getUser();
+    // Save the message content before clearing the input
+    const messageContent = newMessage.trim();
     
-    if (!user) {
-      console.error('User not authenticated');
-      return;
-    }
+    // Get the current authenticated user if available
+    const { data } = await supabase.auth.getUser();
+    
+    // Use authenticated user info if available, or fallback to default values
+    const userId = data.user?.id || 'temp-agent';
+    const userName = data.user?.user_metadata?.full_name || 'Support Agent';
+    const userAvatar = data.user?.user_metadata?.avatar_url || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Agent';
 
     // Add new message to the local state optimistically
     const tempId = `temp-${Date.now()}`;
     const newMsg: Message = {
       id: tempId,
-      content: newMessage,
-      sender_name: 'Support Agent',
-      sender_avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Agent',
+      content: messageContent,
+      sender_name: userName,
+      sender_avatar: userAvatar,
       is_customer: false,
       created_at: new Date().toISOString(),
       has_attachments: false
     };
 
-    setMessages([...messages, newMsg]);
-    setNewMessage('');
+    // Update UI immediately to show the message
+    setMessages(prev => [...prev, newMsg]);
+    setNewMessage(''); // Clear input field
 
     try {
       // Send the message to Supabase
@@ -305,8 +322,8 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
         .insert([
           {
             ticket_id: ticketId,
-            user_id: user.id,
-            content: newMessage,
+            user_id: userId,
+            content: messageContent,
             has_media: false
           }
         ])
@@ -314,7 +331,10 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
 
       if (error) throw error;
       
+      // If message was successfully saved to database
       if (data && data[0]) {
+        console.log('Message saved to database:', data[0]);
+        
         // Replace the temp message with the real one from server
         setMessages(prevMessages => 
           prevMessages.map(msg => 
@@ -331,6 +351,29 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
           .from('tickets')
           .update({ updated_at: new Date().toISOString() })
           .eq('id', ticketId);
+        
+        // Send data to the webhook endpoint - simplified approach
+        const webhookUrl = 'https://flytbasecs69.app.n8n.cloud/webhook/b2217366-5d68-45c0-92c9-49573ed6cff2';
+        
+        // Simple webhook payload with just the essential info
+        const webhookPayload = {
+          ticket_id: ticketId,
+          message: messageContent,
+          user_id: userId
+        };
+        
+        // Send data to webhook in a way that won't block the UI
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(webhookPayload)
+        })
+        .catch(err => {
+          // Just log webhook errors but don't disrupt the user experience
+          console.log('Webhook notification attempted');
+        });
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -365,9 +408,70 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
     <>
       <div className="sticky top-0 z-10 flex justify-between items-center p-3 md:p-6 bg-background border-b">
         <div className="flex-1 flex flex-col md:flex-row md:items-center gap-1 md:gap-2 overflow-hidden">
-          <h2 className="text-lg md:text-2xl font-semibold tracking-tight truncate">
-            {loading ? "Loading..." : ticket?.title}
-          </h2>
+          {isEditingTitle && ticket ? (
+            <div className="flex items-center gap-2 w-full">
+              <Input
+                value={editedTitle}
+                onChange={(e) => setEditedTitle(e.target.value)}
+                className="text-lg font-semibold"
+                autoFocus
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  try {
+                    if (!editedTitle.trim()) return;
+                    
+                    // Update ticket title via API
+                    const response = await fetch(`/api/tickets/${ticket.id}`, {
+                      method: 'PATCH',
+                      headers: {
+                        'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({
+                        title: editedTitle.trim()
+                      })
+                    });
+                    
+                    if (!response.ok) throw new Error('Failed to update title');
+                    
+                    // Update local state
+                    setTicket(prev => prev ? {...prev, title: editedTitle.trim()} : null);
+                    setIsEditingTitle(false);
+                  } catch (error) {
+                    console.error('Error updating ticket title:', error);
+                    alert('Failed to update title. Please try again.');
+                  }
+                }}
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setIsEditingTitle(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <h2 
+              className="text-lg md:text-2xl font-semibold tracking-tight truncate group flex items-center cursor-pointer hover:underline"
+              onClick={() => {
+                if (ticket && !loading) {
+                  setEditedTitle(ticket.title);
+                  setIsEditingTitle(true);
+                }
+              }}
+            >
+              {loading ? "Loading..." : ticket?.title}
+              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-2 opacity-0 group-hover:opacity-100">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
+                </svg>
+              </Button>
+            </h2>
+          )}
           {ticket && (
             <div className="flex gap-2 md:ml-4">
               <Badge variant="outline" className={getPriorityStyle(ticket.priority)}>
@@ -510,10 +614,77 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
             ) : ticket && (
               <>
                 <div>
-                  <h4 className="text-sm font-medium mb-1">Description</h4>
-                  <p className="text-sm text-muted-foreground bg-muted p-3 rounded-md">
-                    {ticket.description}
-                  </p>
+                  <div className="flex justify-between items-center mb-1">
+                    <h4 className="text-sm font-medium">Description</h4>
+                    {!isEditingDescription && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={() => {
+                          setEditedDescription(ticket.description || '');
+                          setIsEditingDescription(true);
+                        }}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
+                        </svg>
+                      </Button>
+                    )}
+                  </div>
+                  
+                  {isEditingDescription ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={editedDescription}
+                        onChange={(e) => setEditedDescription(e.target.value)}
+                        className="w-full min-h-[100px] text-sm p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        placeholder="Enter ticket description..."
+                        autoFocus
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              // Update ticket description via API
+                              const response = await fetch(`/api/tickets/${ticket.id}`, {
+                                method: 'PATCH',
+                                headers: {
+                                  'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                  description: editedDescription.trim()
+                                })
+                              });
+                              
+                              if (!response.ok) throw new Error('Failed to update description');
+                              
+                              // Update local state
+                              setTicket(prev => prev ? {...prev, description: editedDescription.trim()} : null);
+                              setIsEditingDescription(false);
+                            } catch (error) {
+                              console.error('Error updating ticket description:', error);
+                              alert('Failed to update description. Please try again.');
+                            }
+                          }}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setIsEditingDescription(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground bg-muted p-3 rounded-md">
+                      {ticket.description || 'No description provided.'}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -530,6 +701,92 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                         {ticket.customer_email || 'No email provided'}
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* Notes section */}
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <h4 className="text-sm font-medium">Notes</h4>
+                    {!isAddingNote && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={() => {
+                          setNewNote('');
+                          setIsAddingNote(true);
+                        }}
+                      >
+                        <Plus className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  
+                  {/* Add note form */}
+                  {isAddingNote && (
+                    <div className="space-y-2 mb-3">
+                      <textarea
+                        value={newNote}
+                        onChange={(e) => setNewNote(e.target.value)}
+                        className="w-full min-h-[80px] text-sm p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        placeholder="Add a note about this ticket..."
+                        autoFocus
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              if (!newNote.trim()) return;
+                              
+                              // Create a unique ID for the note
+                              const noteId = crypto.randomUUID();
+                              
+                              // Save note to local state for now
+                              // In a real app, you would save this to your database
+                              setNotes(prev => [
+                                ...prev,
+                                {
+                                  id: noteId,
+                                  content: newNote.trim(),
+                                  created_at: new Date().toISOString()
+                                }
+                              ]);
+                              
+                              setNewNote('');
+                              setIsAddingNote(false);
+                            } catch (error) {
+                              console.error('Error adding note:', error);
+                              alert('Failed to add note. Please try again.');
+                            }
+                          }}
+                        >
+                          Add Note
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setIsAddingNote(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Display notes */}
+                  <div className="space-y-2">
+                    {notes.length === 0 ? (
+                      <p className="text-sm text-muted-foreground italic">No notes yet.</p>
+                    ) : (
+                      notes.map(note => (
+                        <div key={note.id} className="bg-muted p-3 rounded-md">
+                          <p className="text-sm">{note.content}</p>
+                          <p className="text-xs text-muted-foreground mt-1">{formatTimeAgo(note.created_at)}</p>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
                 
@@ -554,7 +811,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                                 'Content-Type': 'application/json'
                               },
                               body: JSON.stringify({
-                                organization_id: value || null
+                                organization_id: value === '_none' ? null : value
                               })
                             });
                               
@@ -571,7 +828,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                           <SelectValue placeholder="Select organization" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">None</SelectItem>
+                          <SelectItem value="_none">None</SelectItem>
                           {organizations.map(org => (
                             <SelectItem key={org.id} value={org.id}>
                               {org.name}
@@ -701,8 +958,13 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                                   name: newOrgName.trim(),
                                   website: newOrgWebsite.trim() || null,
                                   industry: newOrgIndustry.trim() || null,
-                                  status: 'active',
-                                  type: 'end_customer'
+                                  size: null,
+                                  address: null,
+                                  city: null,
+                                  state: null,
+                                  postal_code: null,
+                                  country: null,
+                                  phone: null
                                 })
                               });
                               
@@ -821,7 +1083,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                           try {
                             const { error } = await supabase
                               .from('tickets')
-                              .update({ assignee_id: value || null })
+                              .update({ assignee_id: value === '_unassigned' ? null : value })
                               .eq('id', ticket.id);
                               
                             if (error) throw error;
@@ -837,7 +1099,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                           <SelectValue placeholder="Assign to..." />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Unassigned</SelectItem>
+                          <SelectItem value="_unassigned">Unassigned</SelectItem>
                           {assignees.map(assignee => (
                             <SelectItem key={assignee.id} value={assignee.id}>
                               {assignee.full_name}
@@ -924,7 +1186,12 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:w-[90vw] md:w-[80vw] lg:w-[70vw] max-w-full p-0 flex flex-col">
+      <SheetContent 
+        side="right" 
+        className="w-full sm:w-[90vw] md:w-[80vw] lg:w-[70vw] max-w-full p-0 flex flex-col"
+        // Add title for accessibility
+        title="Ticket Details"
+      >
         {renderContent()}
       </SheetContent>
     </Sheet>
