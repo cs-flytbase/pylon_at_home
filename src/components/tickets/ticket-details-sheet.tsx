@@ -30,6 +30,7 @@ import { useRouter } from 'next/navigation';
 import { formatTimeAgo } from '@/lib/utils';
 import React from 'react';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/auth-context';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
 type Message = {
@@ -66,25 +67,13 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   const [newOrgWebsite, setNewOrgWebsite] = useState('');
   const [newOrgIndustry, setNewOrgIndustry] = useState('');
   const [isCreatingOrg, setIsCreatingOrg] = useState(false);
-  
-  // State for editing ticket properties
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [isEditingDescription, setIsEditingDescription] = useState(false);
-  const [editedTitle, setEditedTitle] = useState('');
-  const [editedDescription, setEditedDescription] = useState('');
-  
-  // State for notes functionality
-  const [notes, setNotes] = useState<{id: string; content: string; created_at: string}[]>([]);
-  const [newNote, setNewNote] = useState('');
-  const [isAddingNote, setIsAddingNote] = useState(false);
-  
   const realtimeChannelRef = useRef<RealtimeChannel | null>(null);
   
   // If the component is being used inside the ticket-detail-overlay, we want to
   // render the content directly without the Sheet wrapper
   const isStandaloneView = typeof document !== 'undefined' ? 
     !!document.querySelector('.ticket-detail-overlay') : false;
-    
+
   // Fetch all assignees (profiles) and organizations
   useEffect(() => {
     const fetchData = async () => {
@@ -101,13 +90,12 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
           setAssignees(assigneeData || []);
         }
         
-        // Fetch organizations via API instead of direct supabase query to avoid typing issues
+        // Fetch organizations - using direct API call since Supabase types may not be updated
         try {
           const response = await fetch('/api/organizations');
           if (response.ok) {
-            const orgsData = await response.json();
-            setOrganizations(orgsData || []);
-            console.log('Organizations loaded:', orgsData);
+            const data = await response.json();
+            setOrganizations(data.organizations || []);
           } else {
             console.error('Failed to fetch organizations from API');
           }
@@ -123,6 +111,22 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
       fetchData();
     }
   }, [open]);
+
+  // Helper to deduplicate messages (removes temp if real exists)
+  function deduplicateMessages(messages: Message[]): Message[] {
+    const seen = new Map<string, Message>();
+    for (const msg of messages) {
+      // Use content, sender, and created_at (rounded to nearest 10s) as key
+      const createdAtKey = msg.created_at ? new Date(Math.round(new Date(msg.created_at).getTime() / 10000) * 10000).toISOString() : '';
+      const key = `${msg.content}|${msg.sender_name}|${createdAtKey}`;
+      // Prefer real message over temp
+      if (!msg.id.startsWith('temp-') || !seen.has(key)) {
+        seen.set(key, msg);
+      }
+    }
+    // Sort by created_at
+    return Array.from(seen.values()).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
 
   // Setup real-time subscription for ticket updates
   useEffect(() => {
@@ -171,7 +175,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
             has_attachments: payload.new.has_media || false
           };
           
-          setMessages(current => [...current, newMessage]);
+          setMessages(current => deduplicateMessages([...current, newMessage]));
         })
         .subscribe();
 
@@ -246,7 +250,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
             has_attachments: msg.has_media || false
           }));
           
-          setMessages(formattedMessages);
+          setMessages(deduplicateMessages(formattedMessages));
         }
       } catch (error) {
         console.error('Error fetching ticket data:', error);
@@ -284,102 +288,135 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   };
 
   // Handle sending a new message
+  const { user } = useAuth();
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !ticketId) return;
+    if (!newMessage.trim()) return;
 
-    // Save the message content before clearing the input
-    const messageContent = newMessage.trim();
-    
-    // Get the current authenticated user if available
-    const { data } = await supabase.auth.getUser();
-    
-    // Use authenticated user info if available, or fallback to default values
-    const userId = data.user?.id || 'temp-agent';
-    const userName = data.user?.user_metadata?.full_name || 'Support Agent';
-    const userAvatar = data.user?.user_metadata?.avatar_url || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Agent';
-
+    if (!user) {
+      console.error('User not authenticated from useAuth context');
+      return;
+    }
+  
     // Add new message to the local state optimistically
-    const tempId = `temp-${Date.now()}`;
+    // Use a truly unique tempId for optimistic UI, including random string
+  const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const senderIsCustomer = user?.user_metadata?.role === 'customer';
     const newMsg: Message = {
       id: tempId,
-      content: messageContent,
-      sender_name: userName,
-      sender_avatar: userAvatar,
-      is_customer: false,
+      content: newMessage,
+      sender_name: user?.user_metadata?.full_name || user?.email || 'Support Agent',
+      sender_avatar: user?.user_metadata?.avatar_url || undefined,
+      is_customer: senderIsCustomer,
       created_at: new Date().toISOString(),
-      has_attachments: false
+      has_attachments: false,
     };
-
-    // Update UI immediately to show the message
-    setMessages(prev => [...prev, newMsg]);
-    setNewMessage(''); // Clear input field
-
+  
+    setMessages([...messages, newMsg]);
+    setNewMessage('');
+  
+    // Defensive: Ensure user.id and ticketId are valid UUIDs
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(user.id)) {
+      console.error('Invalid user.id for Supabase insert:', user.id);
+      alert('Internal error: Invalid user ID. Please reload and try again.');
+      setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
+      return;
+    }
+    if (!uuidRegex.test(ticketId)) {
+      console.error('Invalid ticketId for Supabase insert:', ticketId);
+      alert('Internal error: Invalid ticket ID. Please reload and try again.');
+      setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
+      return;
+    }
+  
     try {
-      // Send the message to Supabase
-      const { data, error } = await supabase
+      // Debug: Log IDs and payload before DB insert
+      console.log('user.id:', user.id, 'ticketId:', ticketId);
+      console.log('Inserting message to Supabase:', {
+        ticket_id: ticketId,
+        content: newMessage,
+        sender_id: user.id,
+        sender_name: user.user_metadata?.full_name || user.email || 'Support Agent',
+        sender_avatar: user.user_metadata?.avatar_url || null,
+        is_customer: senderIsCustomer,
+        sender_type: senderIsCustomer ? 'customer' : 'agent',
+        has_attachments: false,
+      });
+      // Insert message into the messages table
+      // Only include columns that exist in the messages table schema
+      // If you want to support sender_type etc., update your DB and types first!
+      const { data: insertedMessage, error: insertError } = await supabase
         .from('messages')
         .insert([
           {
+            sender_id: user.id,
+            sender_type: 'agent',
             ticket_id: ticketId,
-            user_id: userId,
-            content: messageContent,
-            has_media: false
+            content: newMessage,
+            user_id: user.id,
+            has_media: false, // Adjust this if your schema uses has_attachments instead
+            // created_at will be set by default if your DB uses a default value
           }
         ])
-        .select('id, created_at');
-
-      if (error) throw error;
+        .select()
+        .single();
+  
+      if (insertError) throw insertError;
       
-      // If message was successfully saved to database
-      if (data && data[0]) {
-        console.log('Message saved to database:', data[0]);
-        
-        // Replace the temp message with the real one from server
+      if (insertedMessage) {
+        // Update the UI with the real message data from server
         setMessages(prevMessages => 
           prevMessages.map(msg => 
             msg.id === tempId ? {
               ...msg,
-              id: data[0].id,
-              created_at: data[0].created_at,
+              id: insertedMessage.id,
+              created_at: insertedMessage.created_at,
             } : msg
           )
         );
-
-        // Also update the ticket's updated_at timestamp
-        await supabase
+  
+        // Update the ticket's updated_at timestamp
+        const { error: ticketUpdateError } = await supabase
           .from('tickets')
           .update({ updated_at: new Date().toISOString() })
           .eq('id', ticketId);
-        
-        // Send data to the webhook endpoint - simplified approach
-        const webhookUrl = 'https://flytbasecs69.app.n8n.cloud/webhook/b2217366-5d68-45c0-92c9-49573ed6cff2';
-        
-        // Simple webhook payload with just the essential info
-        const webhookPayload = {
-          ticket_id: ticketId,
-          message: messageContent,
-          user_id: userId
-        };
-        
-        // Send data to webhook in a way that won't block the UI
-        fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(webhookPayload)
-        })
-        .catch(err => {
-          // Just log webhook errors but don't disrupt the user experience
-          console.log('Webhook notification attempted');
-        });
+          
+        if (ticketUpdateError) {
+          console.error('Error updating ticket timestamp:', ticketUpdateError);
+        }
+  
+        // Send to external webhook
+        try {
+          const webhookResponse = await fetch('https://flytbasecs69.app.n8n.cloud/webhook/b2217366-5d68-45c0-92c9-49573ed6cff2', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: newMessage,
+              user_id: user.id,
+              ticket_id: ticketId
+            })
+          });
+          
+          if (!webhookResponse.ok) {
+            console.error('Webhook response not OK:', await webhookResponse.text());
+          }
+        } catch (webhookError) {
+          console.error('Error sending to webhook:', webhookError);
+          // We don't fail the entire operation if just the webhook fails
+        }
       }
-    } catch (error) {
-      console.error('Error sending message:', error);
+    } catch (error: any) {
+      // Enhanced error reporting for better debugging
+      if (error && typeof error === 'object') {
+        console.error('Error sending message:', JSON.stringify(error, null, 2));
+        alert(`Failed to send message. Error: ${error.message || JSON.stringify(error)}`);
+      } else {
+        console.error('Error sending message:', error);
+        alert('Failed to send message. Please try again.');
+      }
       // Remove the temp message if it failed
       setMessages(prevMessages => prevMessages.filter(msg => msg.id !== tempId));
-      alert('Failed to send message. Please try again.');
     }
   };
 
@@ -408,70 +445,9 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
     <>
       <div className="sticky top-0 z-10 flex justify-between items-center p-3 md:p-6 bg-background border-b">
         <div className="flex-1 flex flex-col md:flex-row md:items-center gap-1 md:gap-2 overflow-hidden">
-          {isEditingTitle && ticket ? (
-            <div className="flex items-center gap-2 w-full">
-              <Input
-                value={editedTitle}
-                onChange={(e) => setEditedTitle(e.target.value)}
-                className="text-lg font-semibold"
-                autoFocus
-              />
-              <Button
-                size="sm"
-                onClick={async () => {
-                  try {
-                    if (!editedTitle.trim()) return;
-                    
-                    // Update ticket title via API
-                    const response = await fetch(`/api/tickets/${ticket.id}`, {
-                      method: 'PATCH',
-                      headers: {
-                        'Content-Type': 'application/json'
-                      },
-                      body: JSON.stringify({
-                        title: editedTitle.trim()
-                      })
-                    });
-                    
-                    if (!response.ok) throw new Error('Failed to update title');
-                    
-                    // Update local state
-                    setTicket(prev => prev ? {...prev, title: editedTitle.trim()} : null);
-                    setIsEditingTitle(false);
-                  } catch (error) {
-                    console.error('Error updating ticket title:', error);
-                    alert('Failed to update title. Please try again.');
-                  }
-                }}
-              >
-                <Check className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setIsEditingTitle(false)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ) : (
-            <h2 
-              className="text-lg md:text-2xl font-semibold tracking-tight truncate group flex items-center cursor-pointer hover:underline"
-              onClick={() => {
-                if (ticket && !loading) {
-                  setEditedTitle(ticket.title);
-                  setIsEditingTitle(true);
-                }
-              }}
-            >
-              {loading ? "Loading..." : ticket?.title}
-              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-2 opacity-0 group-hover:opacity-100">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
-                </svg>
-              </Button>
-            </h2>
-          )}
+          <h2 className="text-lg md:text-2xl font-semibold tracking-tight truncate">
+            {loading ? "Loading..." : ticket?.title}
+          </h2>
           {ticket && (
             <div className="flex gap-2 md:ml-4">
               <Badge variant="outline" className={getPriorityStyle(ticket.priority)}>
@@ -539,7 +515,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                 </div>
               </div>
             ) : messages.map((message) => (
-              <div key={message.id} className={`flex items-start gap-2 md:gap-3 ${message.is_customer ? '' : 'justify-end'}`}>
+              <div key={message.id.startsWith('temp-') ? message.id : `msg-${message.id}`} className={`flex items-start gap-2 md:gap-3 ${message.is_customer ? '' : 'justify-end'}`}>
                 {message.is_customer && (
                   <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium">
                     {message.sender_name.charAt(0)}
@@ -585,7 +561,9 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                 placeholder="Type your message..."
                 className="flex-1 min-w-0 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               />
-              <Button type="submit" size="sm" className="md:h-10">
+              <Button type="submit" size="sm" className="md:h-10" 
+              // onClick={handleSendMessage}
+              >
                 <Send className="h-4 w-4 md:mr-2" />
                 <span className="hidden md:inline">Send</span>
               </Button>
@@ -614,77 +592,10 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
             ) : ticket && (
               <>
                 <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <h4 className="text-sm font-medium">Description</h4>
-                    {!isEditingDescription && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => {
-                          setEditedDescription(ticket.description || '');
-                          setIsEditingDescription(true);
-                        }}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
-                        </svg>
-                      </Button>
-                    )}
-                  </div>
-                  
-                  {isEditingDescription ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={editedDescription}
-                        onChange={(e) => setEditedDescription(e.target.value)}
-                        className="w-full min-h-[100px] text-sm p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                        placeholder="Enter ticket description..."
-                        autoFocus
-                      />
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          onClick={async () => {
-                            try {
-                              // Update ticket description via API
-                              const response = await fetch(`/api/tickets/${ticket.id}`, {
-                                method: 'PATCH',
-                                headers: {
-                                  'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify({
-                                  description: editedDescription.trim()
-                                })
-                              });
-                              
-                              if (!response.ok) throw new Error('Failed to update description');
-                              
-                              // Update local state
-                              setTicket(prev => prev ? {...prev, description: editedDescription.trim()} : null);
-                              setIsEditingDescription(false);
-                            } catch (error) {
-                              console.error('Error updating ticket description:', error);
-                              alert('Failed to update description. Please try again.');
-                            }
-                          }}
-                        >
-                          Save
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setIsEditingDescription(false)}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground bg-muted p-3 rounded-md">
-                      {ticket.description || 'No description provided.'}
-                    </p>
-                  )}
+                  <h4 className="text-sm font-medium mb-1">Description</h4>
+                  <p className="text-sm text-muted-foreground bg-muted p-3 rounded-md">
+                    {ticket.description}
+                  </p>
                 </div>
 
                 <div>
@@ -703,99 +614,13 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                     </div>
                   </div>
                 </div>
-
-                {/* Notes section */}
-                <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <h4 className="text-sm font-medium">Notes</h4>
-                    {!isAddingNote && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => {
-                          setNewNote('');
-                          setIsAddingNote(true);
-                        }}
-                      >
-                        <Plus className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
-                  
-                  {/* Add note form */}
-                  {isAddingNote && (
-                    <div className="space-y-2 mb-3">
-                      <textarea
-                        value={newNote}
-                        onChange={(e) => setNewNote(e.target.value)}
-                        className="w-full min-h-[80px] text-sm p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                        placeholder="Add a note about this ticket..."
-                        autoFocus
-                      />
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          onClick={async () => {
-                            try {
-                              if (!newNote.trim()) return;
-                              
-                              // Create a unique ID for the note
-                              const noteId = crypto.randomUUID();
-                              
-                              // Save note to local state for now
-                              // In a real app, you would save this to your database
-                              setNotes(prev => [
-                                ...prev,
-                                {
-                                  id: noteId,
-                                  content: newNote.trim(),
-                                  created_at: new Date().toISOString()
-                                }
-                              ]);
-                              
-                              setNewNote('');
-                              setIsAddingNote(false);
-                            } catch (error) {
-                              console.error('Error adding note:', error);
-                              alert('Failed to add note. Please try again.');
-                            }
-                          }}
-                        >
-                          Add Note
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setIsAddingNote(false)}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Display notes */}
-                  <div className="space-y-2">
-                    {notes.length === 0 ? (
-                      <p className="text-sm text-muted-foreground italic">No notes yet.</p>
-                    ) : (
-                      notes.map(note => (
-                        <div key={note.id} className="bg-muted p-3 rounded-md">
-                          <p className="text-sm">{note.content}</p>
-                          <p className="text-xs text-muted-foreground mt-1">{formatTimeAgo(note.created_at)}</p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
                 
                 <div className="space-y-2">
                   <h4 className="text-sm font-medium">Organization</h4>
                   {isUpdatingOrganization ? (
                     <div className="flex items-center gap-2">
                       <Select
-                        defaultValue={ticket.organization_id || ""}
+                        defaultValue={ticket.organization_id || "none"}
                         onValueChange={async (value) => {
                           try {
                             if (value === 'create_new') {
@@ -804,18 +629,29 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                               return;
                             }
                             
-                            // Using a direct API call for better compatibility
-                            const response = await fetch(`/api/tickets/${ticket.id}`, {
-                              method: 'PATCH',
-                              headers: {
-                                'Content-Type': 'application/json'
-                              },
-                              body: JSON.stringify({
-                                organization_id: value === '_none' ? null : value
-                              })
-                            });
-                              
-                            if (!response.ok) throw new Error('Failed to update organization');
+                            // Update organization using Supabase directly for reliability
+                            let orgIdToSet = value === 'none' ? null : value;
+                            if (value === 'create_new') {
+                              // Create new org, then update ticket
+                              const { data: newOrg, error: orgError } = await supabase
+                              // @ts-ignore
+                                .from('organizations')
+                                .insert({ name: newOrgName, website: newOrgWebsite, industry: newOrgIndustry })
+                                .select()
+                                .single();
+                              if (orgError) throw orgError;
+                              // @ts-ignore
+                              orgIdToSet = newOrg.id;
+                              // @ts-ignore
+                              setOrganizations((prev) => [...prev, newOrg]);
+                              setIsCreatingOrg(false);
+                            }
+                            const { error: ticketUpdateError } = await supabase
+                            .from('tickets')
+                            // @ts-ignore
+                              .update({ organization_id: orgIdToSet })
+                              .eq('id', ticket.id);
+                            if (ticketUpdateError) throw ticketUpdateError;
                             // Ticket will update via real-time subscription
                           } catch (err) {
                             console.error('Failed to update organization:', err);
@@ -828,7 +664,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                           <SelectValue placeholder="Select organization" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="_none">None</SelectItem>
+                          <SelectItem value="none">None</SelectItem>
                           {organizations.map(org => (
                             <SelectItem key={org.id} value={org.id}>
                               {org.name}
@@ -885,6 +721,10 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                   {/* Dialog for creating a new organization */}
                   <Dialog open={isCreatingOrg} onOpenChange={setIsCreatingOrg}>
                     <DialogContent className="sm:max-w-[425px]">
+  {/* Accessibility: Add visually hidden DialogTitle for screen readers */}
+  <span style={{position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0}}>
+    <DialogTitle>Create New Organization</DialogTitle>
+  </span>
                       <DialogHeader>
                         <DialogTitle>Create New Organization</DialogTitle>
                         <DialogDescription>
@@ -958,13 +798,8 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                                   name: newOrgName.trim(),
                                   website: newOrgWebsite.trim() || null,
                                   industry: newOrgIndustry.trim() || null,
-                                  size: null,
-                                  address: null,
-                                  city: null,
-                                  state: null,
-                                  postal_code: null,
-                                  country: null,
-                                  phone: null
+                                  status: 'active',
+                                  type: 'end_customer'
                                 })
                               });
                               
@@ -1078,29 +913,33 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
                   {isUpdatingAssignee ? (
                     <div className="flex items-center gap-2">
                       <Select
-                        defaultValue={ticket.assignee_id || ""}
+                        defaultValue={ticket.assignee_id || "none"}
                         onValueChange={async (value) => {
                           try {
-                            const { error } = await supabase
-                              .from('tickets')
-                              .update({ assignee_id: value === '_unassigned' ? null : value })
-                              .eq('id', ticket.id);
-                              
-                            if (error) throw error;
-                            // Ticket will update via real-time subscription
+                            if (value === "none") {
+                              await supabase
+                                .from("tickets")
+                                .update({ assignee_id: null })
+                                .eq("id", ticket.id);
+                            } else {
+                              await supabase
+                                .from("tickets")
+                                .update({ assignee_id: value })
+                                .eq("id", ticket.id);
+                            }
                           } catch (err) {
-                            console.error('Failed to update assignee:', err);
+                            console.error("Failed to update assignee:", err);
                           } finally {
                             setIsUpdatingAssignee(false);
                           }
                         }}
                       >
                         <SelectTrigger className="w-[180px]">
-                          <SelectValue placeholder="Assign to..." />
+                          <SelectValue placeholder="Select assignee" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="_unassigned">Unassigned</SelectItem>
-                          {assignees.map(assignee => (
+                          <SelectItem value="none">None</SelectItem>
+                          {assignees.map((assignee) => (
                             <SelectItem key={assignee.id} value={assignee.id}>
                               {assignee.full_name}
                             </SelectItem>
@@ -1186,12 +1025,7 @@ export function TicketDetailsSheet({ ticketId, open, onOpenChange }: TicketDetai
   
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent 
-        side="right" 
-        className="w-full sm:w-[90vw] md:w-[80vw] lg:w-[70vw] max-w-full p-0 flex flex-col"
-        // Add title for accessibility
-        title="Ticket Details"
-      >
+      <SheetContent side="right" className="w-full sm:w-[90vw] md:w-[80vw] lg:w-[70vw] max-w-full p-0 flex flex-col">
         {renderContent()}
       </SheetContent>
     </Sheet>

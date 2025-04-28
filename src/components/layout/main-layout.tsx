@@ -29,7 +29,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       )}
 
       {/* Main content */}
-      <div className="flex flex-col flex-1 md:pl-64">
+      <div className="flex flex-col flex-1 md:pl-64 px-3">
         <Navbar onMenuToggle={() => setSidebarOpen(!sidebarOpen)} />
         <main className="flex-1">{children}</main>
       </div>

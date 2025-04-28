@@ -21,8 +21,16 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
+import { useEffect } from 'react';
 type TicketCardProps = {
-  ticket: Ticket;
+  ticket: Ticket & {
+    lastMessage?: {
+      id: string;
+      content: string;
+      sender_name: string;
+      created_at: string;
+    };
+  };
 };
 
 // Helper function to format date
@@ -58,7 +66,153 @@ function formatTimeAgo(dateString: string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+import { useAuth } from '@/context/auth-context';
 export function TicketCard({ ticket }: TicketCardProps) {
+  const [lastMessage, setLastMessage] = useState(ticket.lastMessage || null);
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { user } = useAuth();
+
+  // Supabase client import
+  // If you use a custom supabase client, import it here
+  // import { supabase } from '@/lib/supabase';
+  const supabase = require('@/lib/supabase').supabase;
+
+  // Real-time subscription for new messages on this ticket
+  useEffect(() => {
+    const channel = supabase
+      .channel(`ticket-card-${ticket.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `ticket_id=eq.${ticket.id}`
+      }, (payload: any) => {
+        const msg = payload.new;
+        setLastMessage({
+          id: msg.id,
+          content: msg.content,
+          sender_name: msg.sender_name || 'Unknown',
+          created_at: msg.created_at
+        });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [ticket.id]);
+
+  // If lastMessage not provided, fetch it on mount
+  useEffect(() => {
+    if (!lastMessage) {
+      (async () => {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id,content,created_at,profiles: user_id(full_name)')
+          .eq('ticket_id', ticket.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+        if (data) {
+          setLastMessage({
+            id: data.id,
+            content: data.content,
+            sender_name: data.profiles?.full_name || 'Unknown',
+            created_at: data.created_at
+          });
+        }
+      })();
+    }
+  }, [ticket.id, lastMessage]);
+
+  // Handle reply submit
+  const handleReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reply.trim()) return;
+    if (!user) {
+      setError('You must be logged in to reply.');
+      return;
+    }
+    setSending(true);
+    setError(null);
+
+    // Optimistic UI: create a temp message
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const senderIsCustomer = user?.user_metadata?.role === 'customer';
+    const optimisticMsg = {
+      id: tempId,
+      content: reply,
+      sender_name: user?.user_metadata?.full_name || user?.email || 'Support Agent',
+      created_at: new Date().toISOString(),
+    };
+    setLastMessage(optimisticMsg);
+    setReply('');
+
+    // Validate UUIDs
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(user.id)) {
+      setError('Internal error: Invalid user ID. Please reload and try again.');
+      setLastMessage(null);
+      setSending(false);
+      return;
+    }
+    if (!uuidRegex.test(ticket.id)) {
+      setError('Internal error: Invalid ticket ID. Please reload and try again.');
+      setLastMessage(null);
+      setSending(false);
+      return;
+    }
+
+    try {
+      // Insert message into the messages table
+      const { data: insertedMessage, error: insertError } = await supabase
+        .from('messages')
+        .insert([
+          {
+            sender_id: user.id,
+            sender_type: senderIsCustomer ? 'customer' : 'agent',
+            ticket_id: ticket.id,
+            content: optimisticMsg.content,
+            user_id: user.id,
+            has_media: false,
+          }
+        ])
+        .select()
+        .single();
+      if (insertError) throw insertError;
+      setLastMessage({
+        id: insertedMessage.id,
+        content: insertedMessage.content,
+        sender_name: user.user_metadata?.full_name || user.email || 'You',
+        created_at: insertedMessage.created_at
+      });
+      // Optionally update ticket's updated_at timestamp
+      await supabase
+        .from('tickets')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', ticket.id);
+      // Webhook notification (optional, as in ticket-details-sheet)
+      try {
+        await fetch('https://flytbasecs69.app.n8n.cloud/webhook/b2217366-5d68-45c0-92c9-49573ed6cff2', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: optimisticMsg.content,
+            user_id: user.id,
+            ticket_id: ticket.id
+          })
+        });
+      } catch (webhookError) {
+        // Do not block UI on webhook error
+        console.error('Webhook error:', webhookError);
+      }
+    } catch (err: any) {
+      setError('Failed to send reply');
+      setLastMessage(null);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const [isDragging, setIsDragging] = useState(false);
   const cardRef = React.useRef<HTMLDivElement>(null);
   
@@ -455,8 +609,32 @@ export function TicketCard({ ticket }: TicketCardProps) {
             {ticket.type}
           </Badge>
         </div>
+        {/* Last message display */}
+        {lastMessage ? (
+          <div className="mb-2 p-2 rounded bg-muted text-xs">
+            <div className="font-semibold text-primary mb-1">{lastMessage.sender_name}</div>
+            <div>{lastMessage.content}</div>
+            <div className="text-muted-foreground mt-1 text-[10px]">{formatTimeAgo(lastMessage.created_at)}</div>
+          </div>
+        ) : (
+          <div className="mb-2 text-xs text-muted-foreground">No messages yet</div>
+        )}
+        {/* Inline reply box */}
+        <form onSubmit={handleReply} className="flex gap-2 mt-2">
+          <input
+            type="text"
+            value={reply}
+            onChange={e => setReply(e.target.value)}
+            placeholder="Reply..."
+            className="flex-1 min-w-0 border rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-primary"
+            disabled={sending}
+          />
+          <Button type="submit" size="sm" disabled={sending || !reply.trim()}>
+            {sending ? 'Sending...' : 'Send'}
+          </Button>
+        </form>
+        {error && <div className="text-xs text-red-500 mt-1">{error}</div>}
       </CardContent>
-      
       <CardFooter className="p-4 pt-0 flex items-center justify-between text-sm">
         <div className="flex items-center text-muted-foreground">
           <User className="h-3.5 w-3.5 mr-1" />
@@ -472,3 +650,4 @@ export function TicketCard({ ticket }: TicketCardProps) {
     </Card>
   );
 }
+
