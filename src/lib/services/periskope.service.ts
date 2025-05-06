@@ -1,7 +1,7 @@
 import { createClient } from '@/utils/supabase/client';
 
 export class PeriskopeService {
-  private apiBaseUrl = 'https://api.periskope.com/v1';
+  private apiBaseUrl = 'https://api.periskope.app/v1';
   
   // Fetch user's WhatsApp accounts from the database
   async getUserWhatsAppAccounts(userId: string) {
@@ -61,7 +61,7 @@ export class PeriskopeService {
   }
   
   // Fetch available chats from a WhatsApp account
-  async fetchAvailableChats(accountId: string) {
+  async fetchAvailableChats(accountId: string, chatType?: 'personal' | 'group' | 'all') {
     const supabase = createClient();
     
     // Get the account details
@@ -73,20 +73,58 @@ export class PeriskopeService {
       
     if (accountError) throw accountError;
     
+    // Prepare query parameters if chat type is specified
+    const params = new URLSearchParams();
+    if (chatType && chatType !== 'all') {
+      params.append('chat_type', chatType);
+    }
+    
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    
     // Call Periskope API to get chats
-    const response = await fetch(`${this.apiBaseUrl}/chats`, {
+    const response = await fetch(`${this.apiBaseUrl}/chats${queryString}`, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${account.periskope_api_key}`
+        'Authorization': `Bearer ${account.periskope_api_key}`,
+        'x-phone': account.phone_number
       }
     });
     
     if (!response.ok) {
-      throw new Error('Failed to fetch WhatsApp chats');
+      throw new Error(`Failed to fetch WhatsApp chats: ${await response.text()}`);
     }
     
     const chats = await response.json();
     return chats;
+  }
+  
+  // Fetch group chats from a WhatsApp account
+  async fetchGroupChats(accountId: string) {
+    return this.fetchAvailableChats(accountId, 'group');
+  }
+  
+  // Fetch group chats using phone number and API key directly
+  async fetchGroupChatsByPhone(phone: string, apiKey: string) {
+    try {
+      // Call Periskope API to get group chats
+      const response = await fetch(`${this.apiBaseUrl}/chats?chat_type=group`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'x-phone': phone
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch WhatsApp group chats: ${await response.text()}`);
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error fetching WhatsApp group chats:', error);
+      throw error;
+    }
   }
   
   // Import a specific chat
@@ -237,7 +275,8 @@ export class PeriskopeService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${whatsappAccount.periskope_api_key}`
+        'Authorization': `Bearer ${whatsappAccount.periskope_api_key}`,
+        'x-phone': whatsappAccount.phone_number
       },
       body: JSON.stringify({
         text: message
