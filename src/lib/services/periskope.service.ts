@@ -1,161 +1,285 @@
-import { createServerClient } from '@/lib/supabase';
+import { createClient } from '@/utils/supabase/client';
 
 export class PeriskopeService {
-  private apiUrl = 'https://api.periskope.app/v1';
-  private apiKey: string;
-  private phoneNumber: string;
-
-  constructor() {
-    this.apiKey = process.env.PERISKOPE_API_KEY || '';
-    this.phoneNumber = process.env.PERISKOPE_PHONE_NUMBER || '';
-  }
-
-  private async request(endpoint: string, method = 'GET', data?: any) {
-    try {
-      const url = `${this.apiUrl}${endpoint}`;
-      const headers = {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'x-phone': this.phoneNumber,
-        'Content-Type': 'application/json'
-      };
-
-      const options: RequestInit = { 
-        method, 
-        headers 
-      };
-
-      if (data && (method === 'POST' || method === 'PATCH')) {
-        options.body = JSON.stringify(data);
-      }
-
-      const response = await fetch(url, options);
+  private apiBaseUrl = 'https://api.periskope.com/v1';
+  
+  // Fetch user's WhatsApp accounts from the database
+  async getUserWhatsAppAccounts(userId: string) {
+    const supabase = createClient();
+    
+    const { data, error } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('user_id', userId);
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Periskope API request failed');
-      }
-
-      return await response.json();
+    if (error) throw error;
+    return data || [];
+  }
+  
+  // Add a new WhatsApp account for the user
+  async addWhatsAppAccount(userId: string, phone: string, apiKey: string, accountName: string) {
+    const supabase = createClient();
+    
+    // Validate the API key first by making a test request
+    const isValid = await this.validateApiKey(apiKey, phone);
+    if (!isValid) {
+      throw new Error('Invalid Periskope API key or phone number');
+    }
+    
+    const { data, error } = await supabase
+      .from('whatsapp_accounts')
+      .insert({
+        user_id: userId,
+        phone_number: phone,
+        periskope_api_key: apiKey,
+        account_name: accountName || `WhatsApp (${phone.slice(-4)})`,
+      })
+      .select()
+      .single();
+      
+    if (error) throw error;
+    return data;
+  }
+  
+  // Validate the API key with Periskope
+  private async validateApiKey(apiKey: string, phone: string) {
+    try {
+      const response = await fetch(`${this.apiBaseUrl}/auth/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({ phone_number: phone })
+      });
+      
+      return response.ok;
     } catch (error) {
-      console.error('Periskope API error:', error);
-      throw error;
+      console.error('Failed to validate Periskope API key:', error);
+      return false;
     }
   }
-
-  // Get all WhatsApp chats
-  async getChats(limit = 20, page = 1) {
-    return this.request(`/chats?limit=${limit}&page=${page}`);
-  }
-
-  // Get messages for a specific chat
-  async getMessages(chatId: string, limit = 50) {
-    return this.request(`/chats/${chatId}/messages?limit=${limit}`);
-  }
-
-  // Send a message
-  async sendMessage(chatId: string, message: string, options: any = {}) {
-    const payload = {
-      chatId,
-      message,
-      ...options
-    };
-    return this.request('/messages', 'POST', payload);
-  }
-
-  // Import conversations into your database
-  async importConversations(userId: string) {
-    try {
-      // Get chats from Periskope
-      const chatsResponse = await this.getChats(50);
-      const chats = chatsResponse.data;
+  
+  // Fetch available chats from a WhatsApp account
+  async fetchAvailableChats(accountId: string) {
+    const supabase = createClient();
+    
+    // Get the account details
+    const { data: account, error: accountError } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .single();
       
-      const supabase = createServerClient();
-      let importedCount = 0;
+    if (accountError) throw accountError;
+    
+    // Call Periskope API to get chats
+    const response = await fetch(`${this.apiBaseUrl}/chats`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${account.periskope_api_key}`
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch WhatsApp chats');
+    }
+    
+    const chats = await response.json();
+    return chats;
+  }
+  
+  // Import a specific chat
+  async importChat(accountId: string, chatId: string, teamId: string, userId: string) {
+    const supabase = createClient();
+    
+    // Get the account details
+    const { data: account, error: accountError } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .single();
       
-      // Process each chat
-      for (const chat of chats) {
-        // Check if conversation already exists
-        const { data: existingConv } = await supabase
-          .from('conversations')
-          .select('id')
-          .eq('platform', 'whatsapp')
-          .eq('external_id', chat.id)
-          .maybeSingle();
+    if (accountError) throw accountError;
+    
+    // Call Periskope API to get chat details and messages
+    const response = await fetch(`${this.apiBaseUrl}/chats/${chatId}/messages`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${account.periskope_api_key}`
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch chat messages');
+    }
+    
+    const chatData = await response.json();
+    
+    // First, create a new conversation in the conversations table
+    const { data: newConversation, error: newConvError } = await supabase
+      .from('conversations')
+      .insert({
+        title: chatData.contact.name || chatData.contact.phone,
+        status: 'open',
+        priority: 'medium',
+        channel_type: 'whatsapp',
+        channel_id: chatId,
+        user_id: userId,
+        team_id: teamId,
+        metadata: {
+          contact_phone: chatData.contact.phone,
+          periskope_account_id: accountId
+        }
+      })
+      .select()
+      .single();
+      
+    if (newConvError) throw newConvError;
+    
+    // Create WhatsApp conversation record
+    const { data: whatsappConversation, error: convError } = await supabase
+      .from('whatsapp_conversations')
+      .insert({
+        account_id: accountId,
+        conversation_id: newConversation.id,
+        whatsapp_conversation_id: chatId,
+        contact_name: chatData.contact.name,
+        contact_phone: chatData.contact.phone,
+        last_message: chatData.messages[0]?.text || '',
+        last_message_time: chatData.messages[0]?.timestamp || new Date().toISOString(),
+        team_id: teamId,
+        imported_by: userId
+      })
+      .select()
+      .single();
+      
+    if (convError) throw convError;
+    
+    // Import the messages
+    for (const msg of chatData.messages) {
+      // Create a message in conversation_messages table
+      const { data: newMessage, error: msgError } = await supabase
+        .from('conversation_messages')
+        .insert({
+          conversation_id: newConversation.id,
+          content: msg.text,
+          user_id: userId,
+          is_from_customer: msg.from !== account.phone_number
+        })
+        .select()
+        .single();
         
-        if (!existingConv) {
-          // Get contact name or phone number
-          const recipient = chat.name || chat.phone || 'Unknown Contact';
-          
-          // Insert new conversation
-          const { data: newConv, error } = await supabase
-            .from('conversations')
-            .insert({
-              platform: 'whatsapp',
-              recipient,
-              external_id: chat.id,
-              is_group: chat.isGroup || false,
-              user_id: userId,
-              last_message: chat.lastMessage?.body || null,
-              last_message_at: chat.lastMessage?.timestamp || new Date().toISOString()
-            })
-            .select()
-            .single();
-          
-          if (error) throw error;
-          
-          // Import messages for this conversation
-          await this.importMessages(newConv.id, chat.id, userId);
-          importedCount++;
-        }
-      }
+      if (msgError) continue; // Skip if error, continue with next message
       
-      return { success: true, imported: importedCount };
-    } catch (error) {
-      console.error('Error importing Periskope conversations:', error);
-      return { success: false, error };
+      // Store WhatsApp specific message details
+      await supabase
+        .from('whatsapp_messages')
+        .insert({
+          message_id: newMessage.id,
+          whatsapp_message_id: msg.id,
+          sender_phone: msg.from,
+          sender_name: msg.sender_name,
+          is_from_me: msg.from === account.phone_number,
+          media_url: msg.media?.url || null,
+          media_type: msg.media?.type || null,
+          sent_at: msg.timestamp
+        });
     }
+    
+    return { conversation: newConversation, messageCount: chatData.messages.length };
+  }
+  
+  // Send a reply to a WhatsApp conversation
+  async sendWhatsAppReply(conversationId: string, message: string, userId: string) {
+    const supabase = createClient();
+    
+    // Get the conversation and associated WhatsApp account
+    const { data: conversation, error: convError } = await supabase
+      .from('conversations')
+      .select(`
+        id,
+        channel_id,
+        metadata,
+        whatsapp:whatsapp_conversations!inner(
+          account:account_id(id, periskope_api_key, phone_number)
+        )
+      `)
+      .eq('id', conversationId)
+      .single();
+    
+    if (convError) throw convError;
+    
+    // TypeScript type handling for the nested structure
+    // Need to use type assertions since the query returns a complex structure
+    interface WhatsAppAccount { 
+      id: string; 
+      periskope_api_key: string; 
+      phone_number: string; 
+    }
+    
+    // The account is nested in a structure from a join query
+    // First cast to any to bypass TypeScript's type checking, then access the properties
+    const whatsappData = conversation.whatsapp as any[];
+    if (!whatsappData || !whatsappData[0] || !whatsappData[0].account) {
+      throw new Error('WhatsApp account information is missing');
+    }
+    
+    const accountData = whatsappData[0].account;
+    const whatsappAccount = {
+      id: accountData.id,
+      periskope_api_key: accountData.periskope_api_key,
+      phone_number: accountData.phone_number
+    };
+    
+    // Send message via Periskope API
+    const response = await fetch(`${this.apiBaseUrl}/chats/${conversation.channel_id}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${whatsappAccount.periskope_api_key}`
+      },
+      body: JSON.stringify({
+        text: message
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to send WhatsApp message');
+    }
+    
+    const sentMessage = await response.json();
+    
+    // Add message to conversation_messages
+    const { data: newMessage, error: msgError } = await supabase
+      .from('conversation_messages')
+      .insert({
+        conversation_id: conversationId,
+        content: message,
+        user_id: userId,
+        is_from_customer: false
+      })
+      .select()
+      .single();
+      
+    if (msgError) throw msgError;
+    
+    // Store WhatsApp specific message details
+    await supabase
+      .from('whatsapp_messages')
+      .insert({
+        message_id: newMessage.id,
+        whatsapp_message_id: sentMessage.id,
+        sender_phone: whatsappAccount.phone_number,
+        is_from_me: true,
+        sent_at: new Date().toISOString()
+      });
+    
+    return newMessage;
   }
 
-  // Import messages for a specific conversation
-  private async importMessages(conversationId: string, chatId: string, userId: string) {
-    try {
-      // Get messages from Periskope
-      const messagesResponse = await this.getMessages(chatId);
-      const messages = messagesResponse.data;
-      
-      const supabase = createServerClient();
-      
-      // Process each message
-      for (const message of messages) {
-        // Only insert if message doesn't exist
-        const { data: existingMsg } = await supabase
-          .from('conversation_messages')
-          .select('id')
-          .eq('external_id', message.id)
-          .maybeSingle();
-          
-        if (!existingMsg) {
-          await supabase
-            .from('conversation_messages')
-            .insert({
-              conversation_id: conversationId,
-              content: message.body || message.caption || '[Media message]',
-              external_id: message.id,
-              direction: message.fromMe ? 'outbound' : 'inbound',
-              status: this.mapMessageStatus(message.ack),
-              has_media: !!message.hasMedia,
-              created_at: message.timestamp || new Date().toISOString(),
-              user_id: userId
-            });
-        }
-      }
-    } catch (error) {
-      console.error('Error importing Periskope messages:', error);
-    }
-  }
-
-  // Map Periskope message status to your system
-  private mapMessageStatus(ack?: number): 'pending' | 'sent' | 'delivered' | 'read' | 'failed' {
+  // Map message status codes to readable status
+  private mapMessageStatus(ack: number): 'pending' | 'sent' | 'delivered' | 'read' | 'failed' {
     if (ack === undefined) return 'pending';
     
     switch (ack) {

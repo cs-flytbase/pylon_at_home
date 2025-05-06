@@ -41,6 +41,11 @@ const items: SidebarNavItem[] = [
     icon: <UserRound className="w-5 h-5" />,
   },
   {
+    title: "WhatsApp",
+    href: "/whatsapp",
+    icon: <MessageSquare className="w-5 h-5" />,
+  },
+  {
     title: "Reports",
     href: "/reports",
     icon: <BarChart3 className="w-5 h-5" />,

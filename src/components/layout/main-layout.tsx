@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { IconSidebar } from "./icon-sidebar";
-import { DetailsSidebar } from "./details-sidebar";
+import DetailsSidebar from "./details-sidebar";
 import { ChevronLeft, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,17 @@ interface MainLayoutProps {
 export function MainLayout({ children }: MainLayoutProps) {
   const [detailsSidebarOpen, setDetailsSidebarOpen] = useState(true);
   const pathname = usePathname();
+  
+  // Determine active section from pathname
+  const getActiveSection = () => {
+    // Extract the first part of the path (excluding leading slash)
+    const section = pathname.split('/')[1];
+    
+    // If path is root, return dashboard as the active section
+    if (!section) return 'dashboard';
+    
+    return section;
+  };
 
   // Close mobile sidebar when path changes
   useEffect(() => {
@@ -35,6 +46,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       <DetailsSidebar 
         isOpen={detailsSidebarOpen} 
         onClose={() => setDetailsSidebarOpen(false)} 
+        activeSection={getActiveSection()}
       />
 
       {/* Mobile details sidebar backdrop */}

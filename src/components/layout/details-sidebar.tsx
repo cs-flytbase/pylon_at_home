@@ -1,21 +1,54 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { cn } from "@/lib/utils";
-import { X, Search, PlusCircle, Users, Bell, ChevronDown } from "lucide-react";
+import React, { useState } from 'react';
+import { usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { useTeam } from '@/context/team-context';
+import { X, User, Users, MessageSquare, Settings, Clipboard, ChevronRight } from 'lucide-react';
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { Search, PlusCircle, Bell, ChevronDown } from "lucide-react";
 
 interface DetailsSidebarProps {
   isOpen: boolean;
   onClose: () => void;
+  activeSection: string;
 }
 
-export function DetailsSidebar({ isOpen, onClose }: DetailsSidebarProps) {
+interface SidebarItemProps {
+  label: string;
+  icon?: React.ReactNode;
+  href?: string;
+  onClick?: () => void;
+  isActive?: boolean;
+}
+
+function SidebarItem({ label, icon, href, onClick, isActive }: SidebarItemProps) {
+  const content = (
+    <div className={`flex items-center gap-2 p-2 rounded-md cursor-pointer transition-colors ${
+      isActive ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+    }`}>
+      {icon && <div className="w-4 h-4 flex items-center justify-center">{icon}</div>}
+      <span className="flex-1">{label}</span>
+      {href && <ChevronRight className="h-4 w-4 opacity-50" />}
+    </div>
+  );
+  
+  if (href) {
+    return <Link href={href}>{content}</Link>;
+  }
+  
+  return <div onClick={onClick}>{content}</div>;
+}
+
+export default function DetailsSidebar({ isOpen, onClose, activeSection }: DetailsSidebarProps) {
+  const router = useRouter();
+  const { currentTeam } = useTeam();
   const pathname = usePathname();
   
   // Determine which section to show based on the current path
@@ -33,8 +66,17 @@ export function DetailsSidebar({ isOpen, onClose }: DetailsSidebarProps) {
       <div className="flex flex-col h-full">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
-          <h2 className="font-semibold text-lg capitalize">{section}</h2>
-          <Button variant="ghost" size="icon" onClick={onClose} className="md:hidden">
+          <h2 className="font-semibold text-lg">
+            {activeSection === 'dashboard' && 'Dashboard'}
+            {activeSection === 'conversations' && 'Conversations'}
+            {activeSection === 'tickets' && 'Tickets'}
+            {activeSection === 'customers' && 'Customers'}
+            {activeSection === 'reports' && 'Reports'}
+            {activeSection === 'settings' && 'Settings'}
+            {activeSection === 'teams' && 'Teams'}
+            {activeSection === 'whatsapp' && 'WhatsApp'}
+          </h2>
+          <Button variant="ghost" size="icon" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -53,13 +95,101 @@ export function DetailsSidebar({ isOpen, onClose }: DetailsSidebarProps) {
         
         {/* Content - Changes based on the active section */}
         <ScrollArea className="flex-1">
-          {section === 'inbox' && <InboxSidebarContent />}
-          {section === 'conversations' && <ConversationsSidebarContent />}
-          {section === 'tickets' && <TicketsSidebarContent />}
-          {section === 'customers' && <CustomersSidebarContent />}
-          {(section === 'dashboard' || section === '') && <DashboardSidebarContent />}
-          {section === 'reports' && <ReportsSidebarContent />}
-          {section === 'settings' && <SettingsSidebarContent />}
+          {activeSection === 'dashboard' && (
+            <div>
+              <h3 className="font-medium mb-2">Dashboard Options</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="Overview" /></li>
+                <li><SidebarItem label="Performance" /></li>
+                <li><SidebarItem label="Activity" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'conversations' && (
+            <div>
+              <h3 className="font-medium mb-2">Conversation Channels</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="All Conversations" /></li>
+                <li><SidebarItem label="Unassigned" /></li>
+                <li><SidebarItem label="Assigned to me" /></li>
+                <li><SidebarItem label="Archived" /></li>
+                <li><SidebarItem label="WhatsApp" icon={<MessageSquare className="h-4 w-4" />} href="/whatsapp" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'tickets' && (
+            <div>
+              <h3 className="font-medium mb-2">Ticket Views</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="All Tickets" /></li>
+                <li><SidebarItem label="Open Issues" /></li>
+                <li><SidebarItem label="Backlog" /></li>
+                <li><SidebarItem label="Completed" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'customers' && (
+            <div>
+              <h3 className="font-medium mb-2">Customer Management</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="All Customers" /></li>
+                <li><SidebarItem label="Active" /></li>
+                <li><SidebarItem label="Inactive" /></li>
+                <li><SidebarItem label="Import/Export" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'reports' && (
+            <div>
+              <h3 className="font-medium mb-2">Report Types</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="Performance Metrics" /></li>
+                <li><SidebarItem label="Customer Satisfaction" /></li>
+                <li><SidebarItem label="Team Analytics" /></li>
+                <li><SidebarItem label="Custom Reports" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'settings' && (
+            <div>
+              <h3 className="font-medium mb-2">Settings</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="General" /></li>
+                <li><SidebarItem label="Profile" icon={<User className="h-4 w-4" />} /></li>
+                <li><SidebarItem label="Team Members" icon={<Users className="h-4 w-4" />} href="/settings/team" /></li>
+                <li><SidebarItem label="Notifications" /></li>
+                <li><SidebarItem label="API & Integrations" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'teams' && (
+            <div>
+              <h3 className="font-medium mb-2">Team Management</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label={`${currentTeam?.name || 'Your Team'}`} icon={<Users className="h-4 w-4" />} /></li>
+                <li><SidebarItem label="Members" href="/teams/members" /></li>
+                <li><SidebarItem label="Invite Members" href="/teams/invite" /></li>
+                <li><SidebarItem label="Team Settings" href="/teams/settings" /></li>
+              </ul>
+            </div>
+          )}
+          
+          {activeSection === 'whatsapp' && (
+            <div>
+              <h3 className="font-medium mb-2">WhatsApp Integration</h3>
+              <ul className="space-y-2">
+                <li><SidebarItem label="Accounts" href="/whatsapp?tab=accounts" /></li>
+                <li><SidebarItem label="Import Conversations" href="/whatsapp?tab=import" /></li>
+                <li><SidebarItem label="Settings" href="/whatsapp/settings" /></li>
+              </ul>
+            </div>
+          )}
         </ScrollArea>
         
         {/* Footer */}
