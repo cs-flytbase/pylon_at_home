@@ -2,10 +2,10 @@
 
 import { notFound, useRouter } from 'next/navigation';
 import { useParams } from 'next/navigation';
-import { TicketDetailsSheet } from '@/components/tickets/ticket-details-sheet';
+import { ConversationDetailsSheet } from '@/components/conversations/conversation-details-sheet';
 import { motion } from 'framer-motion';
 
-export default function TicketDetailsPage() {
+export default function ConversationDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
@@ -13,22 +13,22 @@ export default function TicketDetailsPage() {
   if (!id) {
     return notFound();
   }
-  // 7a12d87d-cf54-4426-879d-2c2b24538e6b
+  
   return (
     <motion.div 
-      className="ticket-detail-overlay"
+      className="conversation-detail-overlay"
       initial={{ x: '100%', opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: '100%', opacity: 0 }}
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
       style={{ paddingTop: '1rem' }}
     >
-      <TicketDetailsSheet 
-        ticketId={id}
+      <ConversationDetailsSheet 
+        conversationId={id}
         open={true}
-        onOpenChange={(open) => {
+        onOpenChange={(open: boolean) => {
           if (!open) {
-            router.push('/tickets');
+            router.push('/conversations');
           }
         }}
       />

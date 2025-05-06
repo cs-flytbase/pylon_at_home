@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, TicketIcon, UserRound, Settings, Inbox, BarChart3 } from "lucide-react";
+import { LayoutDashboard, TicketIcon, UserRound, Settings, Inbox, BarChart3, MessageSquare } from "lucide-react";
 
 type SidebarNavItem = {
   title: string;
@@ -21,6 +21,11 @@ const items: SidebarNavItem[] = [
     title: "Tickets",
     href: "/tickets",
     icon: <TicketIcon className="w-5 h-5" />,
+  },
+  {
+    title: "Conversations",
+    href: "/conversations",
+    icon: <MessageSquare className="w-5 h-5" />,
   },
   {
     title: "Inbox",

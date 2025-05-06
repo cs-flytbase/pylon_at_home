@@ -1,0 +1,166 @@
+1. My framework is Next.js
+2. Use TypeScript for all code
+3. Use Tailwind CSS for styling
+4. Use shadcn/ui for all components
+5. Use Supabase for database and authentication
+6. All React components should be created using shadcn/ui components
+7. Follow the shadcn/ui component patterns for consistency
+8. Use Supabase for data storage and user authentication
+9. use the sonner component if want to use toast: 
+shadcn/ui
+Docs
+Components
+Blocks
+Charts
+Themes
+Colors
+
+Search documentation...
+GitHub
+Toggle theme
+Getting Started
+Introduction
+Installation
+components.json
+Theming
+Dark mode
+CLI
+Monorepo
+Tailwind v4
+New
+Next.js 15 + React 19
+Typography
+Open in v0
+Blocks
+Figma
+Changelog
+Installation
+Next.js
+Vite
+Laravel
+React Router
+Remix
+Astro
+Tanstack Start
+Tanstack Router
+Manual
+Components
+Accordion
+Alert
+Alert Dialog
+Aspect Ratio
+Avatar
+Badge
+Breadcrumb
+Button
+Calendar
+Card
+Carousel
+Chart
+Checkbox
+Collapsible
+Combobox
+Command
+Context Menu
+Data Table
+Date Picker
+Dialog
+Drawer
+Dropdown Menu
+Form
+Hover Card
+Input
+Input OTP
+Label
+Menubar
+Navigation Menu
+Pagination
+Popover
+Progress
+Radio Group
+Resizable
+Scroll Area
+Select
+Separator
+Sheet
+Sidebar
+Skeleton
+Slider
+Sonner
+Switch
+Table
+Tabs
+Textarea
+Toast
+Toggle
+Toggle Group
+Tooltip
+Registry New
+Introduction
+Getting Started
+Examples
+Open in v0
+FAQ
+registry.json
+registry-item.json
+Docs
+Sonner
+Sonner
+An opinionated toast component for React.
+
+Docs
+Preview
+Code
+
+Style:
+New York
+Copy
+Show Toast
+About
+Sonner is built and maintained by emilkowalski_.
+
+Installation
+CLI
+Manual
+Run the following command:
+pnpm
+npm
+yarn
+bun
+npx shadcn@latest add sonner
+Copy
+Add the Toaster component
+app/layout.tsx
+import { Toaster } from "@/components/ui/sonner"
+ 
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <head />
+      <body>
+        <main>{children}</main>
+        <Toaster />
+      </body>
+    </html>
+  )
+}
+Copy
+Usage
+import { toast } from "sonner"
+Copy
+toast("Event has been created.")
+Copy
+Slider
+Switch
+On This Page
+
+About
+Installation
+Usage
+Deploy your shadcn/ui app on Vercel
+Trusted by OpenAI, Sonos, Chick-fil-A, and more.
+Vercel provides tools and infrastructure to deploy apps and features at scale.
+Deploy Now
+Deploy to Vercel
+Built by shadcn. The source code is available on GitHub.
+Sonner - shadcn/ui

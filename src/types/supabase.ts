@@ -248,6 +248,103 @@ export interface Database {
           }
         ]
       }
+      conversations: {
+        Row: {
+          id: string
+          platform: string
+          recipient: string
+          is_group: boolean
+          last_message: string | null
+          last_message_at: string
+          created_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          platform: string
+          recipient: string
+          is_group?: boolean
+          last_message?: string | null
+          last_message_at?: string
+          created_at?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          id?: string
+          platform?: string
+          recipient?: string
+          is_group?: boolean
+          last_message?: string | null
+          last_message_at?: string
+          created_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      
+      conversation_messages: {
+        Row: {
+          id: string
+          conversation_id: string
+          content: string
+          direction: string
+          status: string
+          has_media: boolean
+          created_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          conversation_id: string
+          content: string
+          direction: string
+          status?: string
+          has_media?: boolean
+          created_at?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          id?: string
+          conversation_id?: string
+          content?: string
+          direction?: string
+          status?: string
+          has_media?: boolean
+          created_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_messages_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      
       tickets: {
         Row: {
           assignee_id: string | null

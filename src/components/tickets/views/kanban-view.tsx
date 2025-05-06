@@ -72,10 +72,12 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
   
-  // Set up DnD sensors - must be defined at the top level for React hooks ordering
+  // Set up DnD sensors - only use PointerSensor to prevent keyboard activation
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(PointerSensor, { 
+      activationConstraint: { distance: 5 } 
+    })
+    // Removed KeyboardSensor to prevent Enter key from activating drag
   );
   
   // Initialize Supabase client
@@ -491,10 +493,10 @@ export function KanbanView({ initialTickets }: KanbanViewProps) {
           </SortableContext>
         </div>
 
-        {/* Overlay for the dragged ticket */}
+        {/* Overlay for the dragged ticket - removed rotation for cleaner drag appearance */}
         <DragOverlay>
           {activeTicket && (
-            <div className="opacity-80 rotate-3 scale-105">
+            <div className="opacity-80 scale-105 shadow-lg">
               <TicketCard ticket={activeTicket} />
             </div>
           )}
