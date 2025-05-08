@@ -7,13 +7,47 @@ export class PeriskopeService {
   async getUserWhatsAppAccounts(userId: string) {
     const supabase = createClient();
     
-    const { data, error } = await supabase
-      .from('whatsapp_accounts')
-      .select('*')
-      .eq('user_id', userId);
+    try {
+      const { data, error } = await supabase
+        .from('whatsapp_accounts')
+        .select('*')
+        .eq('user_id', userId);
+        
+      if (error) {
+        console.error('Error fetching WhatsApp accounts:', error);
+        throw error;
+      }
       
-    if (error) throw error;
-    return data || [];
+      console.log(`Found ${data?.length || 0} WhatsApp accounts for user ${userId}`);
+      return data || [];
+    } catch (error) {
+      console.error('Exception in getUserWhatsAppAccounts:', error);
+      return [];
+    }
+  }
+  
+  // Check if a WhatsApp account exists in the database
+  async checkWhatsAppAccountExists(accountId: string) {
+    const supabase = createClient();
+    
+    try {
+      // Check if the account exists in the database
+      const { count, error } = await supabase
+        .from('whatsapp_accounts')
+        .select('*', { count: 'exact', head: true })
+        .eq('id', accountId);
+      
+      if (error) {
+        console.error('Error checking WhatsApp account existence:', error);
+        return false;
+      }
+      
+      // Handle case where count might be null
+      return count !== null && count > 0;
+    } catch (error) {
+      console.error('Exception in checkWhatsAppAccountExists:', error);
+      return false;
+    }
   }
   
   // Add a new WhatsApp account for the user
@@ -44,14 +78,23 @@ export class PeriskopeService {
   // Validate the API key with Periskope
   private async validateApiKey(apiKey: string, phone: string) {
     try {
-      const response = await fetch(`${this.apiBaseUrl}/auth/validate`, {
-        method: 'POST',
+      // Use a simple GET endpoint to check if credentials are valid
+      // The /chats endpoint is reliable for validation
+      const response = await fetch(`${this.apiBaseUrl}/chats?limit=1`, {
+        method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({ phone_number: phone })
+          'Authorization': `Bearer ${apiKey}`,
+          'x-phone': phone // This header is required
+        }
       });
+      
+      // Log validation response for debugging
+      console.log('Periskope API validation response:', response.status);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Validation response error:', errorText);
+      }
       
       return response.ok;
     } catch (error) {
@@ -318,16 +361,205 @@ export class PeriskopeService {
   }
 
   // Map message status codes to readable status
-  private mapMessageStatus(ack: number): 'pending' | 'sent' | 'delivered' | 'read' | 'failed' {
-    if (ack === undefined) return 'pending';
+  mapMessageStatus(ack: number): 'pending' | 'sent' | 'delivered' | 'read' | 'failed' {
+    const statusMap = {
+      0: 'pending',
+      1: 'sent',
+      2: 'delivered',
+      3: 'read',
+      4: 'failed'
+    };
     
-    switch (ack) {
-      case -1: return 'failed';
-      case 0: return 'pending';
-      case 1: return 'sent';
-      case 2: return 'delivered';
-      case 3: return 'read';
-      default: return 'sent';
+    return (statusMap[ack as keyof typeof statusMap] || 'pending') as 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+  }
+  
+  // Get a WhatsApp account by ID
+  async getWhatsAppAccountById(accountId: string) {
+    if (!accountId) {
+      console.warn('getWhatsAppAccountById called with empty accountId');
+      return null;
     }
+    
+    const supabase = createClient();
+    
+    try {
+      // Log the exact query we're making for debugging
+      console.log(`Fetching WhatsApp account with ID: ${accountId}`);
+      
+      // First make a simple count query to see if the account exists
+      const { count, error: countError } = await supabase
+        .from('whatsapp_accounts')
+        .select('*', { count: 'exact', head: true })
+        .eq('id', accountId);
+      
+      if (countError) {
+        console.error('Error checking if WhatsApp account exists:', countError);
+        
+        // Check if the error indicates a table doesn't exist
+        if (countError.message.includes('does not exist')) {
+          console.error('The whatsapp_accounts table might not exist or RLS policies prevent access');
+          return null;
+        }
+      }
+      
+      // If account doesn't exist based on count query, return null early
+      if (count === 0) {
+        console.warn(`No WhatsApp account found with ID: ${accountId}`);
+        return null;
+      }
+      
+      // If we got here, try to get the full account details
+      const { data, error } = await supabase
+        .from('whatsapp_accounts')
+        .select('*') // Using * in case the specific column selection is causing issues
+        .eq('id', accountId)
+        .maybeSingle();
+      
+      if (error) {
+        console.error('Database error fetching WhatsApp account details:', error);
+        return null;
+      }
+      
+      if (!data) {
+        console.warn(`WhatsApp account with ID ${accountId} exists but returned no data`);
+        return null;
+      }
+      
+      // Log successful retrieval
+      console.log('Successfully retrieved WhatsApp account:', { id: data.id, accountName: data.account_name });
+      return data;
+    } catch (error) {
+      console.error('Exception in getWhatsAppAccountById:', error);
+      return null;
+    }
+  }
+  
+  // Send a new WhatsApp message to a recipient (can be a direct contact or a group)
+  async sendWhatsAppMessage(accountId: string, recipient: string, message: string, isGroup: boolean = false) {
+    const supabase = createClient();
+    
+    // Get the account details
+    const { data: account, error: accountError } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .single();
+      
+    if (accountError) {
+      console.error('Error fetching WhatsApp account:', accountError);
+      throw new Error('Failed to find the WhatsApp account');
+    }
+    
+    // For direct messages, the endpoint is different than for group messages
+    let endpoint = '';
+    let body = {};
+    
+    if (isGroup) {
+      // Group chat - use the group chat ID directly
+      endpoint = `${this.apiBaseUrl}/chats/${recipient}/messages`;
+      body = { text: message };
+    } else {
+      // Direct message - use the contacts endpoint with phone number
+      endpoint = `${this.apiBaseUrl}/contacts/${recipient}/messages`;
+      body = { text: message };
+    }
+    
+    // Send message via Periskope API
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${account.periskope_api_key}`,
+        'x-phone': account.phone_number
+      },
+      body: JSON.stringify(body)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Failed to send WhatsApp message:', errorText);
+      throw new Error(`Failed to send WhatsApp message: ${errorText}`);
+    }
+    
+    return await response.json();
+  }
+  
+  // Get messages from a WhatsApp group chat
+  async getChatMessages(accountId: string, chatId: string, limit: number = 20) {
+    const supabase = createClient();
+    
+    // Get the account details
+    const { data: account, error: accountError } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .single();
+      
+    if (accountError) {
+      console.error('Error fetching WhatsApp account:', accountError);
+      throw new Error('Failed to find the WhatsApp account');
+    }
+    
+    // Prepare the endpoint with pagination
+    const endpoint = `${this.apiBaseUrl}/chats/${chatId}/messages?limit=${limit}`;
+    
+    // Fetch messages from Periskope API
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${account.periskope_api_key}`,
+        'x-phone': account.phone_number
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Failed to fetch WhatsApp messages:', errorText);
+      throw new Error(`Failed to fetch WhatsApp messages: ${errorText}`);
+    }
+    
+    return await response.json();
+  }
+  
+  // Get messages from a direct WhatsApp contact
+  async getContactMessages(accountId: string, phoneNumber: string, limit: number = 20) {
+    const supabase = createClient();
+    
+    // Get the account details
+    const { data: account, error: accountError } = await supabase
+      .from('whatsapp_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .single();
+      
+    if (accountError) {
+      console.error('Error fetching WhatsApp account:', accountError);
+      throw new Error('Failed to find the WhatsApp account');
+    }
+    
+    // Format the contact ID if needed - ensure it has the @c.us suffix for WhatsApp contacts
+    const contactId = phoneNumber.includes('@c.us') ? phoneNumber : `${phoneNumber}@c.us`;
+    
+    // Prepare the endpoint with pagination
+    const endpoint = `${this.apiBaseUrl}/contacts/${contactId}/messages?limit=${limit}`;
+    
+    // Fetch messages from Periskope API
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${account.periskope_api_key}`,
+        'x-phone': account.phone_number
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Failed to fetch WhatsApp messages:', errorText);
+      throw new Error(`Failed to fetch WhatsApp messages: ${errorText}`);
+    }
+    
+    return await response.json();
   }
 }

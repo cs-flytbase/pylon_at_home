@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { Search, PlusCircle, Bell, ChevronDown } from "lucide-react";
+import { UserProfileMenu } from "@/components/ui/user-profile-menu";
 
 interface DetailsSidebarProps {
   isOpen: boolean;
@@ -194,16 +195,7 @@ export default function DetailsSidebar({ isOpen, onClose, activeSection }: Detai
         
         {/* Footer */}
         <div className="p-4 border-t">
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-              <Users className="h-4 w-4 text-primary" />
-            </div>
-            <div className="flex flex-col">
-              <span className="text-sm font-medium">Support Team</span>
-              <span className="text-xs text-muted-foreground">5 members</span>
-            </div>
-            <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
-          </div>
+          <UserProfileMenu />
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@/lib/supabase';
+import { createRouteHandlerSupabase } from '@/lib/supabase-server';
 
 // GET /api/conversations/:id
 export async function GET(
@@ -9,7 +9,7 @@ export async function GET(
   try {
     // Note the await for params (Next.js 15 feature)
     const { id } = await params;
-    const supabase = createServerClient();
+    const supabase = createRouteHandlerSupabase();
     
     // Fetch the conversation
     const { data: conversation, error: conversationError } = await supabase
@@ -93,7 +93,7 @@ export async function POST(
       return NextResponse.json({ error: 'Message content is required' }, { status: 400 });
     }
 
-    const supabase = createServerClient();
+    const supabase = createRouteHandlerSupabase();
     
     // Use the real user ID or fallback to a default
     const actualUserId = userId || 'agent-1'; // Default to a system agent if no userId provided

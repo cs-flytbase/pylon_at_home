@@ -6,7 +6,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 // Ensure environment variables are set
-if (!supabaseUrl || !supabaseAnonKey) {
+if (typeof window !== 'undefined' && (!supabaseUrl || !supabaseAnonKey)) {
   console.error(
     'ERROR: Supabase URL or Anonymous Key not found in environment variables. ' +
     'Please make sure your .env.local file is set up correctly.'
@@ -19,7 +19,8 @@ export const supabase = createClient<Database>(
   supabaseAnonKey || 'missing-anon-key'                 // Fallback key that will fail if env vars not set
 );
 
-// Server-side client (for server components and API routes)
+// Basic server client that doesn't depend on next/headers
+// This can be used in environments where cookies aren't available
 export function createServerClient() {
   return createClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL || '',

@@ -5,6 +5,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { createClient } from "@/utils/supabase/client";
+import { toast } from "sonner";
+import { useUser } from "@/hooks/auth";
 
 type Platform = "whatsapp" | "telegram" | "slack" | "email";
 
@@ -15,6 +18,8 @@ interface Conversation {
   last_message: string | null;
   last_message_at: string;
   created_at: string;
+  updated_at: string;
+  user_id: string;
   profiles: {
     id: string;
     full_name: string;
@@ -31,18 +36,51 @@ export function ConversationsList() {
     ? pathname.split('/').pop() 
     : null;
 
+  const { user } = useUser();
+  
   useEffect(() => {
+    if (!user) return;
+    
+    // Initialize Supabase client
+    const supabase = createClient();
+    let subscription: any = null;
+    
     async function fetchConversations() {
       try {
         setLoading(true);
-        const response = await fetch("/api/conversations");
-        
-        if (!response.ok) {
-          throw new Error("Failed to fetch conversations");
+        const { data, error } = await supabase
+          .from('conversations')
+          .select(`
+            id,
+            platform,
+            recipient,
+            last_message,
+            last_message_at,
+            created_at,
+            updated_at,
+            user_id,
+            profiles:profiles(id, full_name, avatar_url)
+          `)
+          .order('updated_at', { ascending: false });
+
+        if (error) {
+          throw error;
         }
         
-        const data = await response.json();
-        setConversations(data.conversations || []);
+        // Process the data to make the profile format compatible with our interface
+        if (data) {
+          const processedData = data.map((conv: any) => ({
+            ...conv,
+            // Supabase returns profiles as an array, but our interface expects an object
+            // We take the first profile from the array
+            profiles: conv.profiles && conv.profiles.length > 0 
+              ? conv.profiles[0] 
+              : { id: '', full_name: 'Unknown', avatar_url: null }
+          }));
+          setConversations(processedData);
+        } else {
+          setConversations([]);
+        }
       } catch (err) {
         console.error("Error fetching conversations:", err);
         setError("Failed to load conversations");
@@ -51,13 +89,55 @@ export function ConversationsList() {
       }
     }
     
+    // Initial fetch
     fetchConversations();
 
-    // Set up a polling interval to refresh conversations
-    const intervalId = setInterval(fetchConversations, 30000); // every 30 seconds
+    // Set up real-time subscription for conversation changes
+    subscription = supabase
+      .channel('conversations-changes')
+      .on('postgres_changes', { 
+        event: '*', // Listen for all events (insert, update, delete)
+        schema: 'public',
+        table: 'conversations',
+        filter: user ? `user_id=eq.${user.id}` : ''
+      }, payload => {
+        console.log('Real-time update:', payload);
+        
+        // Handle the changes based on the event type
+        if (payload.eventType === 'INSERT') {
+          // For insert events, we need to fetch the complete data including profiles
+          // since the payload doesn't include the joined data
+          fetchConversations();
+          toast.success('New conversation created', {
+            position: 'bottom-right',
+            duration: 2000
+          });
+        } else if (payload.eventType === 'UPDATE') {
+          // Update the existing conversation
+          setConversations(prev => {
+            return prev.map(conv => {
+              if (conv.id === payload.new.id) {
+                return { ...conv, ...payload.new };
+              }
+              return conv;
+            });
+          });
+        } else if (payload.eventType === 'DELETE') {
+          // Remove the deleted conversation
+          setConversations(prev => {
+            return prev.filter(conv => conv.id !== payload.old.id);
+          });
+        }
+      })
+      .subscribe();
     
-    return () => clearInterval(intervalId);
-  }, []);
+    // Clean up subscription on unmount
+    return () => {
+      if (subscription) {
+        supabase.removeChannel(subscription);
+      }
+    };
+  }, [user]);
 
   if (loading) {
     return (

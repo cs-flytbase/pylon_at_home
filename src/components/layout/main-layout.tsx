@@ -7,6 +7,8 @@ import DetailsSidebar from "./details-sidebar";
 import { ChevronLeft, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { AuthProvider } from "@/hooks/auth";
+import { TeamProvider } from "@/context/team-context";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -90,7 +92,13 @@ export function MainLayout({ children }: MainLayoutProps) {
         </header>
         
         {/* Page content with scroll */}
-        <main className="flex-1 p-4 md:p-6 overflow-y-auto">{children}</main>
+        <main className="flex-1 p-4 md:p-6 overflow-y-auto">
+          <AuthProvider>
+            <TeamProvider>
+              {children}
+            </TeamProvider>
+          </AuthProvider>
+        </main>
       </div>
     </div>
   );

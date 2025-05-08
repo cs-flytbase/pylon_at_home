@@ -25,29 +25,54 @@ export function ConversationList() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fetchAttempts, setFetchAttempts] = useState(0);
+  const [lastFetchTime, setLastFetchTime] = useState(0);
 
   useEffect(() => {
+    // Prevent continuous refetching if we've had too many attempts in a short time
+    const now = Date.now();
+    const timeSinceLastFetch = now - lastFetchTime;
+    
+    // If we've attempted too many fetches in a short period, stop trying to prevent infinite loops
+    if (fetchAttempts > 3 && timeSinceLastFetch < 10000) {
+      console.error("Too many fetch attempts in a short period, stopping to prevent infinite loop");
+      setLoading(false);
+      setError("Too many reload attempts. Please refresh the page manually.");
+      return;
+    }
+    
     async function fetchConversations() {
       try {
         setLoading(true);
-        const response = await fetch("/api/conversations");
+        setLastFetchTime(Date.now());
+        setFetchAttempts(prev => prev + 1);
+        
+        const response = await fetch("/api/conversations", {
+          // Add cache control to prevent browser caching
+          cache: "no-store",
+          headers: {
+            'pragma': 'no-cache',
+            'cache-control': 'no-cache'
+          }
+        });
         
         if (!response.ok) {
-          throw new Error("Failed to fetch conversations");
+          throw new Error(`Failed to fetch conversations: ${response.status} ${response.statusText}`);
         }
         
         const data = await response.json();
         setConversations(data.conversations || []);
+        setError(null); // Clear any previous errors
       } catch (err) {
         console.error("Error fetching conversations:", err);
-        setError("Failed to load conversations");
+        setError("Failed to load conversations. Please try again later.");
       } finally {
         setLoading(false);
       }
     }
     
     fetchConversations();
-  }, []);
+  }, [fetchAttempts, lastFetchTime]);
 
   if (loading) {
     return (
