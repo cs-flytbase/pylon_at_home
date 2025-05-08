@@ -1,171 +1,174 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createRouteHandlerSupabase } from '@/lib/supabase-server';
 
-// GET /api/conversations/:id
 export async function GET(
-  request: NextRequest, 
-  { params }: { params: Promise<{ id: string }> }
+  request: NextRequest,
+  { params }: { params: { id: string } }
 ) {
   try {
-    // Note the await for params (Next.js 15 feature)
-    const { id } = await params;
+    const conversationId = params.id;
+    
+    // Initialize Supabase client
     const supabase = createRouteHandlerSupabase();
     
-    // Fetch the conversation
-    const { data: conversation, error: conversationError } = await supabase
+    // Check authentication
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    // Get conversation details
+    const { data: conversation, error: convError } = await supabase
       .from('conversations')
-      .select(`
-        id,
-        platform,
-        recipient,
-        last_message,
-        last_message_at,
-        created_at,
-        updated_at,
-        user_id,
-        profiles(id, full_name, avatar_url)
-      `)
-      .eq('id', id)
+      .select('*')
+      .eq('id', conversationId)
       .single();
     
-    if (conversationError) {
-      console.error('Error fetching conversation:', conversationError);
-      return NextResponse.json({ error: 'Failed to fetch conversation' }, { status: 500 });
+    if (convError) {
+      console.error('Error fetching conversation:', convError);
+      return NextResponse.json(
+        { error: 'Conversation not found' },
+        { status: 404 }
+      );
     }
-
-    // Fetch messages for the conversation
-    const { data: messages, error: messagesError } = await supabase
+    
+    // Get messages for the conversation
+    const { data: messages, error: msgError } = await supabase
       .from('conversation_messages')
-      .select(`
-        id,
-        content,
-        created_at,
-        direction,
-        status,
-        has_media,
-        user_id,
-        profiles(id, full_name, avatar_url)
-      `)
-      .eq('conversation_id', id)
+      .select('*')
+      .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true });
     
-    if (messagesError) {
-      console.error('Error fetching messages:', messagesError);
-      return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });
+    if (msgError) {
+      console.error('Error fetching messages:', msgError);
+      return NextResponse.json(
+        { error: 'Failed to fetch messages' },
+        { status: 500 }
+      );
     }
-
-    // Format the response
-    const formattedMessages = messages.map(message => ({
-      id: message.id,
-      content: message.content,
-      created_at: message.created_at,
-      direction: message.direction,
-      status: message.status,
-      has_attachments: message.has_media || false,
-      sender: message.profiles ? {
-        id: message.profiles.id,
-        name: message.profiles.full_name || 'Unknown User',
-        avatar: message.profiles.avatar_url
-      } : null
-    }));
-
-    return NextResponse.json({ 
-      conversation, 
-      messages: formattedMessages 
-    }, { status: 200 });
+    
+    // Check if this is an AI agent conversation
+    let isAiConversation = false;
+    let agentConfig = null;
+    
+    if (conversation.metadata) {
+      try {
+        const metadata = typeof conversation.metadata === 'string'
+          ? JSON.parse(conversation.metadata)
+          : conversation.metadata;
+        
+        if (metadata.is_agent) {
+          isAiConversation = true;
+          agentConfig = metadata.agent_config || null;
+        }
+      } catch (error) {
+        console.error('Error parsing conversation metadata:', error);
+      }
+    }
+    
+    return NextResponse.json({
+      conversation,
+      messages,
+      isAiConversation,
+      agentConfig
+    });
   } catch (error) {
-    console.error('Error fetching conversation details:', error);
-    return NextResponse.json({ error: 'Failed to fetch conversation details' }, { status: 500 });
+    console.error('Error in GET conversation route:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
-// POST /api/conversations/:id/messages - Send a new message
-export async function POST(
-  request: NextRequest, 
-  { params }: { params: Promise<{ id: string }> }
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id } = await params;
+    const conversationId = params.id;
     const body = await request.json();
-    const { content, userId } = body;
-
-    if (!content) {
-      return NextResponse.json({ error: 'Message content is required' }, { status: 400 });
-    }
-
+    
+    // Initialize Supabase client
     const supabase = createRouteHandlerSupabase();
     
-    // Use the real user ID or fallback to a default
-    const actualUserId = userId || 'agent-1'; // Default to a system agent if no userId provided
-
-    // First check if the conversation exists
-    const { data: conversation, error: conversationError } = await supabase
-      .from('conversations')
-      .select('platform, recipient')
-      .eq('id', id)
-      .single();
-
-    if (conversationError) {
-      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+    // Check authentication
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
     }
-
-    // Insert the new message
-    const { data: message, error: messageError } = await supabase
-      .from('conversation_messages')
-      .insert({
-        conversation_id: id,
-        content,
-        direction: 'outbound',
-        user_id: actualUserId,
-        status: 'pending',
-        has_media: false
-      })
-      .select(`
-        id,
-        content,
-        created_at,
-        direction,
-        status,
-        has_media,
-        user_id,
-        profiles(id, full_name, avatar_url)
-      `)
-      .single();
-
-    if (messageError) {
-      throw messageError;
-    }
-
-    // Update the conversation's last_message and last_message_at
-    await supabase
-      .from('conversations')
-      .update({
-        last_message: content,
-        last_message_at: new Date().toISOString()
-      })
-      .eq('id', id);
-
-    // Format the response
-    const formattedMessage = {
-      id: message.id,
-      content: message.content,
-      created_at: message.created_at,
-      direction: message.direction,
-      status: message.status,
-      has_attachments: message.has_media || false,
-      sender: message.profiles ? {
-        id: message.profiles.id,
-        name: message.profiles.full_name || 'Unknown User',
-        avatar: message.profiles.avatar_url
-      } : null
-    };
-
-    // In a real implementation, here we would send the message via the appropriate channel
-    // (WhatsApp API, Telegram API, etc.) and update the message status based on the response
     
-    return NextResponse.json({ message: formattedMessage }, { status: 201 });
-  } catch (error) {  
-    console.error('Error sending message:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    // Update conversation
+    const { data, error } = await supabase
+      .from('conversations')
+      .update(body)
+      .eq('id', conversationId)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Error updating conversation:', error);
+      return NextResponse.json(
+        { error: 'Failed to update conversation' },
+        { status: 500 }
+      );
+    }
+    
+    return NextResponse.json({ conversation: data });
+  } catch (error) {
+    console.error('Error in PATCH conversation route:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const conversationId = params.id;
+    
+    // Initialize Supabase client
+    const supabase = createRouteHandlerSupabase();
+    
+    // Check authentication
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    // Delete conversation
+    const { error } = await supabase
+      .from('conversations')
+      .delete()
+      .eq('id', conversationId);
+    
+    if (error) {
+      console.error('Error deleting conversation:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete conversation' },
+        { status: 500 }
+      );
+    }
+    
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error in DELETE conversation route:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
