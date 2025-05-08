@@ -4,10 +4,12 @@ import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Send, ArrowLeft } from "lucide-react";
+import { Send, ArrowLeft, Bot, Settings } from "lucide-react";
 import { format } from "date-fns";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { AIAgentSettings, EnableAIAgentButton } from "./ai-agent-settings";
 
 type Platform = "whatsapp" | "telegram" | "slack" | "email";
 type MessageDirection = "inbound" | "outbound";
@@ -52,6 +54,7 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [isAiEnabled, setIsAiEnabled] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -75,6 +78,15 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
         const data = await response.json();
         setConversation(data.conversation);
         setMessages(data.messages || []);
+        
+        // Check if AI is enabled for this conversation
+        if (data.conversation.metadata) {
+          const metadata = typeof data.conversation.metadata === 'string'
+            ? JSON.parse(data.conversation.metadata)
+            : data.conversation.metadata;
+            
+          setIsAiEnabled(metadata?.is_agent || false);
+        }
       } catch (err) {
         console.error("Error fetching conversation:", err);
         setError("Failed to load conversation");
@@ -94,7 +106,7 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
     try {
       setSending(true);
       
-      const response = await fetch(`/api/conversations/${id}`, {
+      const response = await fetch(`/api/conversations/${id}/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -110,8 +122,20 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
       
       const data = await response.json();
       
-      // Add the new message to the messages list
-      setMessages(prev => [...prev, data.message]);
+      // Add the new message(s) to the messages list
+      if (data.userMessage) {
+        setMessages(prev => [...prev, data.userMessage]);
+        
+        // If there's an AI response, add it after a short delay to simulate typing
+        if (data.aiMessage) {
+          setTimeout(() => {
+            setMessages(prev => [...prev, data.aiMessage]);
+          }, 500);
+        }
+      } else if (data.message) {
+        // Fallback for non-AI conversations
+        setMessages(prev => [...prev, data.message]);
+      }
       
       // Clear the input
       setNewMessage("");
@@ -223,16 +247,48 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
 
   return (
     <div className="container py-6 space-y-4">
-      <div className="flex items-center gap-3">
-        <Link href="/conversations" className="hover:text-primary">
-          <ArrowLeft className="h-5 w-5" />
-        </Link>
-        {getPlatformIcon(conversation.platform)}
-        <div>
-          <h1 className="text-xl font-medium">{conversation.recipient}</h1>
-          <p className="text-sm text-muted-foreground">
-            {conversation.platform.charAt(0).toUpperCase() + conversation.platform.slice(1)}
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Link href="/conversations" className="hover:text-primary">
+            <ArrowLeft className="h-5 w-5" />
+          </Link>
+          {getPlatformIcon(conversation.platform)}
+          <div>
+            <h1 className="text-xl font-medium">{conversation.recipient}</h1>
+            <p className="text-sm text-muted-foreground">
+              {conversation.platform.charAt(0).toUpperCase() + conversation.platform.slice(1)}
+            </p>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          {isAiEnabled ? (
+            <div className="flex items-center gap-1 text-sm text-primary">
+              <Bot className="h-4 w-4" />
+              <span>AI Enabled</span>
+            </div>
+          ) : (
+            <EnableAIAgentButton conversationId={id} />
+          )}
+          
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="icon">
+                <Settings className="h-4 w-4" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent>
+              <SheetHeader>
+                <SheetTitle>Conversation Settings</SheetTitle>
+              </SheetHeader>
+              <div className="py-4">
+                <AIAgentSettings 
+                  conversationId={id} 
+                  initialEnabled={isAiEnabled}
+                />
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </div>
 
@@ -259,6 +315,12 @@ export function ConversationDetailsPage({ id }: ConversationDetailsPageProps) {
                       : "bg-accent"
                   )}
                 >
+                  {message.direction === "inbound" && isAiEnabled && (
+                    <div className="flex items-center gap-1 text-xs mb-1 text-muted-foreground">
+                      <Bot className="h-3 w-3" />
+                      <span>AI Assistant</span>
+                    </div>
+                  )}
                   <p>{message.content}</p>
                   <div className="flex justify-between items-center mt-1 text-xs opacity-70">
                     <span>

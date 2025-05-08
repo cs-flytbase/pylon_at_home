@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createRouteHandlerSupabase } from '@/lib/supabase-server';
+import { aiAgentService } from '@/lib/services/ai-agent.service';
 
 // Note: We'll use createServerClient which handles auth cookies automatically
 
@@ -174,8 +175,8 @@ export async function POST(
         user_id: user.id, // Using user_id instead of sender_id to match schema
         content: content,
         direction: 'outbound', // Add direction which is required
-        status: 'sent' // Add status field
-
+        status: 'sent', // Add status field
+        is_from_customer: false
       })
       .select()
       .single();
@@ -191,33 +192,11 @@ export async function POST(
     // If this is an AI conversation, generate a response
     if (isAiConversation && agentId) {
       try {
-        // In a real implementation, this would call an external AI service
-        // For now, just send a dummy response from the AI
-        const aiResponse = "I'm an AI assistant ready to help you! What can I assist you with today?";
-        
-        const { data: aiMessage, error: aiError } = await supabase
-          .from('conversation_messages')
-          .insert({
-            conversation_id: conversationId,
-            // For AI messages, use a system ID as user_id
-            user_id: '00000000-0000-0000-0000-000000000000', // System/AI user ID
-            content: aiResponse,
-            direction: 'inbound', // AI messages come inbound
-            status: 'delivered', // Mark as delivered
-            // Store AI metadata in a separate column if needed
-            // You may need to add these columns to your schema
-
-          })
-          .select()
-          .single();
-
-        if (aiError) {
-          console.error('Error sending AI response:', aiError);
-          return NextResponse.json({ 
-            message: userMessage,
-            error: 'Failed to generate AI response'
-          });
-        }
+        // Use the AI agent service to process the message and generate a response
+        const { aiMessage, responseText } = await aiAgentService.processMessage(
+          conversationId,
+          content
+        );
 
         // Return both messages
         return NextResponse.json({ 
